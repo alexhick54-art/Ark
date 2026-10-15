@@ -1,0 +1,21 @@
+# Game files and everything derived from them never go in git.
+exefs/
+romfs/
+dump/
+extracted/
+generated/
+build/
+*.nso
+*.nca
+*.nsp
+*.xci
+*.keys
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.a
+__pycache__/
+*.pyc
+.DS_Store
