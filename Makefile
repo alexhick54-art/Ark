@@ -102,8 +102,10 @@ $(B)/rt/nvn/smaa_data.o: $(B)/inc/smaa_hlsl.inc
 rt: $(RT_OBJ)
 
 ark: $(EXE)
+# (the object list goes in a response file: ~1,800 paths are over Windows' command-line limit)
 $(EXE): $(RT_OBJ) $(GEN_OBJ)
-	$(CC) -o $@ $(RT_OBJ) $(GEN_OBJ) $(LDLIBS) $(if $(filter Windows_NT,$(OS)),,-rdynamic)
+	$(file >$(B)/link.rsp,$(RT_OBJ) $(GEN_OBJ))
+	$(CC) -o $@ @$(B)/link.rsp $(LDLIBS) $(if $(filter Windows_NT,$(OS)),,-rdynamic)
 
 mkromfs: $(B)/mkromfs
 $(B)/mkromfs: tools/mkromfs/mkromfs.c runtime/romfs_build.c
