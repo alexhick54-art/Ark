@@ -30,7 +30,22 @@ Files taken from it, with Ark's changes marked `Ark:` in the code:
 | `runtime/hle/heaps.c`, `vi.c`, `pl.c`, `nvn_boot.c`, `swkbd.c` | `runtime/hle/` | none |
 | `runtime/romfs_build.c`, `romfs_build.h` | same | none |
 
-Ark's own files in `runtime/`: `main.c` (based on LAS's), `stubs.c`, `rando.h`, `settings.h`, `headless/SDL3/SDL.h`.
+| `runtime/nvn/` (objects, cmdbuf, tegra, formats, astc, output_scale, smaa_data, maxwell/, vulkan/) | `runtime/nvn/` | Vulkan device: request only the 1.1-1.3 features the device has (CPU test drivers); the Metal backend and `texpatch.c` (Link's Awakening texture edits) are not taken |
+| `runtime/hle/input.c`, `bindings.c`, `runtime/input_bind.h` | same | Link's Awakening per-frame hooks (warps, randomizer items, door jumps, d-pad walking) removed |
+| `runtime/settings.h` / `settings.c` | same | Ark's own, keeping LAS's display / audio options and their meaning |
+
+Ark's own files in `runtime/`: `main.c` (based on LAS's), `stubs.c`, `rando.h`, `headless/SDL3/SDL.h`,
+`las_hooks_none.c`, `ui_none.c`, `ui/menu.h`, `paths.h`, `nvn/texpatch_none.c`, `hle/fslog.c`.
+
+## SMAA (MIT)
+
+`third_party/smaa/` (SMAA.hlsl and its lookup textures) by Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando
+Navarro and Diego Gutierrez, as vendored by LAS Recomp; license in `third_party/smaa/LICENSE.txt`.
+
+## Built from source by `tools/deps/build_linux_deps.sh` (not in this repository)
+
+Vulkan-Headers and Vulkan-Loader (Apache-2.0), Vulkan Memory Allocator (MIT), shaderc / glslang / SPIRV-Tools
+(Apache-2.0 and others), SDL3 (zlib), SwiftShader (Apache-2.0, testing only).
 
 LAS Recomp's license:
 

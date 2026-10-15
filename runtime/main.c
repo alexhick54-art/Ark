@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #include <unistd.h>
 
 #include "hle.h"
@@ -63,6 +64,14 @@ __attribute__((constructor(101))) static void reserve_guest_space(void) {
     exit(1);
 }
 
+#ifndef ARK_HEADLESS
+static void *run_limit_thread(void *arg) {
+    sleep((unsigned)*(int *)arg);
+    LOG("ARK_RUN_SECONDS reached, exiting\n");
+    exit(0);  // (the backend's atexit handler waits for the GPU and keeps the pipeline cache)
+}
+#endif
+
 // LAS's in-place reboot is not used by Ark yet; kernel.c still references these.
 int rt_reboot_requested(void) { return 0; }
 void rt_request_reboot(int kind) { (void)kind; }
@@ -116,10 +125,25 @@ int main(int argc, char **argv) {
         return 2;
     }
     boot(argv[1]);
-    // Headless: no window loop yet. Keep the process alive while guest threads run; ARK_RUN_SECONDS ends it.
+#ifdef ARK_HEADLESS
+    // No window: keep the process alive while guest threads run; ARK_RUN_SECONDS ends it.
     const char *secs = getenv("ARK_RUN_SECONDS");
     int limit = secs ? atoi(secs) : 0;
     for (int s = 0; !limit || s < limit; s++) sleep(1);
     LOG("ARK_RUN_SECONDS reached, exiting\n");
     _exit(0);
+#else
+    // Window and event loop on the main thread (runtime/nvn/vulkan/device.c); the game's threads wait in
+    // nvnDeviceInitialize until it is up. ARK_RUN_SECONDS (tests) ends the process after that long.
+    const char *secs = getenv("ARK_RUN_SECONDS");
+    if (secs && atoi(secs) > 0) {
+        static int limit;
+        limit = atoi(secs);
+        pthread_t t;
+        pthread_create(&t, NULL, run_limit_thread, &limit);
+    }
+    extern int ui_run(void);
+    ui_run();
+    return 0;
+#endif
 }

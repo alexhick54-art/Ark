@@ -2,7 +2,6 @@
 #include <stdint.h>
 #include "settings.h"
 
-Settings g_settings = {1, 1.0};
 
 // LAS save-file features (save editor, extended flags): no-ops.
 void save_editor_file_read(const char *path, uint64_t addr, int64_t off, int64_t size) {
