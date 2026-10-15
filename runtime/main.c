@@ -120,7 +120,11 @@ static void boot(const char *root) {
 
 int main(int argc, char **argv) {
     plat_init();
+#ifdef _WIN32
+    setvbuf(stderr, NULL, _IONBF, 0);  // (the Windows CRT buffers _IOLBF fully: a crash lost the whole log)
+#else
     setvbuf(stderr, NULL, _IOLBF, 0);
+#endif
     if (argc < 2) {
         fprintf(stderr, "usage: %s <game dir with exefs/ and romfs.bin>\n", argv[0]);
         return 2;
