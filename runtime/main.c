@@ -97,6 +97,7 @@ static void boot(const char *root) {
             stack_size = *(uint32_t *)(meta + 0x1C);
             extern uint64_t g_system_resource_size;
             g_system_resource_size = *(uint32_t *)(meta + 0x14);
+            if (getenv("ARK_NO_VAMM")) g_system_resource_size = 0;  // (test: the SDK allocator without virtual memory)
         }
         fclose(f);
     }

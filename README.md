@@ -15,8 +15,8 @@ This is not an emulator: there is no CPU interpreter or JIT.
 
 ## Status
 
-**The recompiled game draws its first frames**: the boot logo renders through Ark's NVN-on-Vulkan layer. It stops at
-the title screen for now (the test RomFS is partial). See [docs/STATUS.md](docs/STATUS.md) for the measurements and
+**The recompiled game reaches its opening scene**: logo, language menu, and Arceus's opening with dialogue text,
+rendered through Ark's NVN-on-Vulkan layer (tested so far on a software Vulkan driver). See [docs/STATUS.md](docs/STATUS.md) for the measurements and
 what comes next.
 
 | Step | State |
@@ -25,7 +25,7 @@ what comes next.
 | Translator checked against Unicorn on the game's own instructions | 42,000 encodings / ~126,000 random cases, 0 mismatches |
 | Generated C compiles | Linux x86-64: all 1,796 files, 0 errors. Windows: spot-checked |
 | Runtime: loader, kernel, system services (from LAS Recomp) | boots through SDK start-up, 1,895 game constructors and `nnMain` |
-| NVN on Vulkan, shader translation | first frames: the boot logo renders; title screen next |
+| NVN on Vulkan, shader translation | logo, language menu, opening scene with text |
 | Window, audio out, input, plays | window and audio code in the tree; not played yet |
 
 ## Layout

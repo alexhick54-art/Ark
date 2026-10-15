@@ -6,9 +6,7 @@
 //  - hardware cbuf k -> binding k: `layout(std140, set=S, binding=k) uniform CB<k> { uvec4 cb<k>[N]; };`
 //    (anonymous block). N = max(cbuf_size[k] / 16, highest constant-index vec4 + 1), and at least 4096 when
 //    cbuf_dynamic has bit k (the renderer binds up to 64 KB). Register-indexed reads are clamped to N - 1.
-//  - global memory (LDG/STG) -> binding GMEM_BUFFER_INDEX (17):
-//    `layout(std430, set=S, binding=17) [readonly] buffer GMem { uint w[]; } gmem_;`, 32-bit words relative to
-//    maxwell_gmem_base. `readonly` unless the shader stores (needs vertexPipeline/fragmentStoresAndAtomics then);
+//  - global memory (LDG/STG/RED) -> descriptor set GMEM_SET (2), chunked arenas of imported guest memory (below) `readonly` unless the shader stores (needs vertexPipeline/fragmentStoresAndAtomics then);
 //    byte / short stores are atomicAnd + atomicOr on the containing word.
 //  - rscale table -> binding 18: `uniform RScale { vec4 rscale[65]; };` (std140, the MSL buffer 18 contents).
 //  - per-draw tint -> binding 19: `uniform Tint { vec4 ltint[2]; };` (fragment, when uses_tint).
@@ -75,6 +73,13 @@ typedef struct {
 
 // Global memory (LDG/STG) is addressed through one buffer that wraps the guest heap.
 #define GMEM_BUFFER_INDEX 17
+// Vulkan GLSL: global memory is descriptor set GMEM_SET (bound by the renderer for every program):
+//   binding 0: `buffer GMem { uint w[]; } gmem_[maxwell_gmem_chunks]` - chunks of 1 << maxwell_gmem_chunk_log2 bytes
+//   binding 1: `uniform GMemMap { uvec4 gmm[3]; }` - gmm[0] / gmm[1]: arena 0 / 1 base lo, base hi, size lo, size hi;
+//              gmm[2].x: index of arena 1's first chunk (arena 0 starts at chunk 0)
+// An address outside both arenas reads 0. Set once the device's limits are known, before the first translation:
+#define GMEM_SET 2
+extern int maxwell_gmem_chunk_log2, maxwell_gmem_chunks;
 extern uint64_t maxwell_gmem_base, maxwell_gmem_size;
 // Debug: when translating the shader whose code starts at maxwell_dbg_code, output register
 // maxwell_dbg_reg as captured after the instruction at maxwell_dbg_pc (greyscale, all targets).

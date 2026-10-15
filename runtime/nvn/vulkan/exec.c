@@ -924,11 +924,30 @@ typedef struct {
     _Atomic int state;  // 0 building, 1 ready, 2 failed
 } Prog;
 
+// Set layouts shared by every program: GMEM_SET (global memory chunks + their map), and an empty one (compute
+// programs have no set 1).
+static VkDescriptorSetLayout g_empty_layout, g_gmem_layout;
+static void global_layouts(void) {
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&lock);
+    if (!g_gmem_layout) {
+        VkDescriptorSetLayoutBinding lb[2] = {{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, (uint32_t)maxwell_gmem_chunks, VK_SHADER_STAGE_ALL, NULL},
+                                              {1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_ALL, NULL}};
+        VkDescriptorSetLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = lb};
+        VK_CHECK(vkCreateDescriptorSetLayout(g_vk.dev, &ci, NULL, &g_gmem_layout));
+        ci.bindingCount = 0;
+        VK_CHECK(vkCreateDescriptorSetLayout(g_vk.dev, &ci, NULL, &g_empty_layout));
+    }
+    pthread_mutex_unlock(&lock);
+}
+
 static VkPipelineLayout make_layout(Prog *p, int nsets, VkShaderStageFlags s0, VkShaderStageFlags s1) {
+    global_layouts();
     p->set_layout[0] = vk_set_layout(p->binds, p->nbinds, 0, s0);
     if (nsets > 1) p->set_layout[1] = vk_set_layout(p->binds, p->nbinds, 1, s1);
-    VkPipelineLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = (uint32_t)nsets,
-                                     .pSetLayouts = p->set_layout};
+    VkDescriptorSetLayout sl[3] = {p->set_layout[0], nsets > 1 ? p->set_layout[1] : g_empty_layout, g_gmem_layout};
+    VkPipelineLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 3,
+                                     .pSetLayouts = sl};
     VkPipelineLayout l;
     VK_CHECK(vkCreatePipelineLayout(g_vk.dev, &ci, NULL, &l));
     return l;
@@ -1372,6 +1391,26 @@ static void debug_save_depth(TexBackend *b, const char *path) {
     LOG("[vk] saved %s (%ux%u depth %.6f..%.6f)\n", path, b->width, b->height, lo, hi);
 }
 
+// (debug frames, LARECOMP_DUMP_R8=1) an R8 image's level 0 as a PGM: what the GPU actually samples
+static void debug_save_r8(TexBackend *b, const char *path) {
+    if (!b || !b->image || b->format != VK_FORMAT_R8_UNORM) return;
+    uint64_t n = (uint64_t)b->width * b->height;
+    vk_end_pass();
+    VkSpan out = vk_readback(n);
+    VkCommandBuffer cb = vk_cmd();
+    vk_full_barrier(cb);
+    VkBufferImageCopy c = {.bufferOffset = out.off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                           .imageExtent = {b->width, b->height, 1}};
+    vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
+    renderer_flush();
+    FILE *f = fopen(path, "wb");
+    if (!f) return;
+    fprintf(f, "P5 %u %u 255\n", b->width, b->height);
+    fwrite(out.ptr, 1, n, f);
+    fclose(f);
+    LOG("[vk] saved %s\n", path);
+}
+
 static void resolve_feedback(Prog *pr) {
     nfeedback = 0;
     static int off = -1;
@@ -1477,24 +1516,31 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     return ubo_span(guest_copy(r.addr, size), size);
 }
 
-// Global memory (shader LDG/STG, maxwell_gmem_base = HEAP_BASE): the guest heap imported as a GPU buffer
-// (VK_EXT_external_memory_host), zero-copy like metal.m's g_guest_buffer, so compute results land in guest
-// memory. The import pins its pages, so it covers only the heap the game set up (SetHeapSize), made on first use.
-// LARECOMP_VK_NO_GMEM=1: no import, reads return zero.
-static VkBuffer gmem_buf;
-static VkDeviceMemory gmem_mem;
-static uint64_t gmem_size;
+// Global memory (shader LDG / STG / RED) and in-place vertex / index data: guest memory imported as GPU buffers
+// (VK_EXT_external_memory_host), zero-copy like metal.m's g_guest_buffer, so GPU results land in guest memory.
+// Legends: Arceus keeps its heaps in the SDK's virtual-address memory (svcMapPhysicalMemory, runtime/kernel.c), in
+// two clusters: many small maps from ALIAS_BASE up, and one large map (~3.2 GB) far above. Each is an arena: arena 1
+// is the largest physical mapping (>= 256 MB), arena 0 spans every mapping below it. Arenas are imported in chunks
+// of the device's buffer range limit (maxwell_gmem_chunk_log2), arena 0 from chunk 0 up as it grows, arena 1 at
+// the top of the chunk array; shaders get them all as one descriptor array (set GMEM_SET, maxwell/shader.h). An
+// import pins its pages (in arena 0 the gaps between mappings too). LARECOMP_VK_NO_GMEM=1: no imports, reads 0.
+typedef struct { VkBuffer buf; VkDeviceMemory mem; uint64_t base, size; } GChunk;
+static GChunk gch[64];
+static struct { uint64_t base, size; int c0, n; } arenas[2];
+static uint64_t arena_gen = ~0ull;  // kernel_phys_gen() the arenas were last checked against
+static uint64_t gmem_version;       // bumped whenever a chunk is (re)imported
 
-static bool gmem_import(uint64_t size) {
+static bool gmem_import(GChunk *ch, uint64_t base, uint64_t size) {
     PFN_vkGetMemoryHostPointerPropertiesEXT props =
         (PFN_vkGetMemoryHostPointerPropertiesEXT)vkGetDeviceProcAddr(g_vk.dev, "vkGetMemoryHostPointerPropertiesEXT");
     VkMemoryHostPointerPropertiesEXT mp = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
-    if (!props || props(g_vk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, (void *)(uintptr_t)HEAP_BASE, &mp) != VK_SUCCESS ||
+    plat_commit(base, size);  // (Windows: the gaps between mappings are only reserved)
+    if (!props || props(g_vk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, (void *)(uintptr_t)base, &mp) != VK_SUCCESS ||
         !mp.memoryTypeBits)
         return false;
     VkImportMemoryHostPointerInfoEXT imp = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
                                             .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
-                                            .pHostPointer = (void *)(uintptr_t)HEAP_BASE};
+                                            .pHostPointer = (void *)(uintptr_t)base};
     VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &imp, .allocationSize = size,
                                .memoryTypeIndex = (uint32_t)__builtin_ctz(mp.memoryTypeBits)};
     VkDeviceMemory mem;
@@ -1507,47 +1553,121 @@ static bool gmem_import(uint64_t size) {
     VkBuffer buf;
     if (vkCreateBuffer(g_vk.dev, &bi, NULL, &buf) != VK_SUCCESS) { vkFreeMemory(g_vk.dev, mem, NULL); return false; }
     vkBindBufferMemory(g_vk.dev, buf, mem, 0);
-    if (gmem_buf) {  // the heap grew: the old import may still be in use by submitted work
-        vk_wait_seq(submit_seq);
-        vkDestroyBuffer(g_vk.dev, gmem_buf, NULL);
-        vkFreeMemory(g_vk.dev, gmem_mem, NULL);
-    }
-    gmem_buf = buf;
-    gmem_mem = mem;
-    gmem_size = size;
-    LOG("[vk] guest heap imported for shader global memory: %llu MB\n", (unsigned long long)(size >> 20));
+    // (a replaced chunk is kept: it pins the same pages and recorded work may still use it)
+    *ch = (GChunk){buf, mem, base, size};
+    gmem_version++;
     return true;
 }
 
-static uint64_t gmem_tried;  // heap size the import was last attempted for (gmem_info imports / re-imports)
-
-static VkDescriptorBufferInfo gmem_info(void) {
-    static int off = -1;
-    if (off < 0) off = getenv("LARECOMP_VK_NO_GMEM") != NULL || !g_vk.host_import;
-    uint64_t want = (kernel_heap_size() + 0xFFFF) & ~0xFFFFull;
-    if (want > HEAP_MAX) want = HEAP_MAX;
-    if (!off && want > gmem_size && !gmem_import(want)) {
-        LOG("[vk] guest heap import failed (%llu MB): shader global memory reads return zero\n", (unsigned long long)(want >> 20));
-        off = 1;
+// Imports chunks [arena base + k * CS, ...) for k in [have, want) into slots c0 + k; the last one ends at limit.
+static bool gmem_import_chunks(int a, int c0, int have, int want, uint64_t limit) {
+    uint64_t cs = 1ull << maxwell_gmem_chunk_log2;
+    for (int k = have; k < want; k++) {
+        uint64_t b = arenas[a].base + (uint64_t)k * cs, e = b + cs < limit ? b + cs : limit;
+        if (c0 + k < 0 || c0 + k >= maxwell_gmem_chunks || !gmem_import(&gch[c0 + k], b, e - b)) {
+            LOG("[vk] guest memory import failed at %llx (+%llu MB): shader reads there return zero\n", (unsigned long long)b,
+                (unsigned long long)((e - b) >> 20));
+            return false;
+        }
     }
-    if (gmem_buf) return (VkDescriptorBufferInfo){gmem_buf, 0, gmem_size};
-    static uint32_t zero[1024];
-    VkSpan s = vk_transient_copy(zero, sizeof zero, 256);
-    return (VkDescriptorBufferInfo){s.buf, s.off, sizeof zero};
+    return true;
 }
 
-// Vertex / index data read in place from the imported guest heap (renderer.m bind_guest does the same with
+static int gmem_off(void) {
+    static int off = -1;
+    if (off < 0) off = getenv("LARECOMP_VK_NO_GMEM") != NULL || !g_vk.host_import;
+    return off;
+}
+
+// Re-reads the physical mappings when they changed and imports what is new.
+static void gmem_update(void) {
+    if (gmem_off() || kernel_phys_gen() == arena_gen) return;
+    uint64_t gen, ra[1024], rs[1024];
+    int n = kernel_phys_regions(ra, rs, 1024, &gen);
+    arena_gen = gen;
+    uint64_t cs = 1ull << maxwell_gmem_chunk_log2;
+    int big = -1;
+    for (int i = 0; i < n; i++)
+        if (rs[i] >= (256ull << 20) && (big < 0 || rs[i] > rs[big])) big = i;
+    if (big >= 0) {  // arena 1: the large mapping, chunks at the top of the array
+        uint64_t b = ra[big] & ~0xFFFFull, e = (ra[big] + rs[big] + 0xFFFF) & ~0xFFFFull;
+        if (arenas[1].base != b || arenas[1].size != e - b) {
+            int nc = (int)((e - b + cs - 1) / cs);
+            arenas[1] = (typeof(arenas[1])){b, 0, maxwell_gmem_chunks - nc, 0};
+            if (gmem_import_chunks(1, arenas[1].c0, 0, nc, e)) { arenas[1].size = e - b; arenas[1].n = nc; }
+            LOG("[vk] guest memory arena 1: %llx..%llx (%d chunks)\n", (unsigned long long)b, (unsigned long long)e, nc);
+        }
+    }
+    uint64_t lo = ~0ull, hi = 0;
+    for (int i = 0; i < n; i++) {
+        if (i == big || (big >= 0 && ra[i] >= ra[big])) continue;
+        if (ra[i] < lo) lo = ra[i];
+        if (ra[i] + rs[i] > hi) hi = ra[i] + rs[i];
+    }
+    if (hi <= lo) return;
+    if (!arenas[0].n) arenas[0].base = lo & ~0xFFFFull;  // (arena 0's base stays: its chunks are only added)
+    if (hi <= arenas[0].base + arenas[0].size) return;
+    uint64_t limit = big >= 0 ? arenas[1].base : ~0ull;  // full chunks, never into arena 1
+    int want = (int)((hi - arenas[0].base + cs - 1) / cs);
+    if (want > maxwell_gmem_chunks - arenas[1].n) want = maxwell_gmem_chunks - arenas[1].n;
+    uint64_t end = arenas[0].base + (uint64_t)want * cs;
+    if (end > limit) end = limit;
+    int have = arenas[0].n;
+    if (have && arenas[0].size < (uint64_t)have * cs) have--;  // (a partial last chunk: imported again, larger)
+    if (gmem_import_chunks(0, 0, have, want, end)) {
+        arenas[0].n = want;
+        arenas[0].size = end - arenas[0].base;
+        LOG("[vk] guest memory arena 0: %llx..%llx (%d chunks)\n", (unsigned long long)arenas[0].base, (unsigned long long)end, want);
+    }
+}
+
+// Set GMEM_SET for this submission (made again when the chunks changed).
+static VkDescriptorSet gmem_set(void) {
+    static uint64_t set_seq = ~0ull, set_ver = ~0ull;
+    static VkDescriptorSet set;
+    gmem_update();
+    uint64_t seq = vk_pending_seq();
+    if (set && set_seq == seq && set_ver == gmem_version) return set;
+    set = vk_alloc_set(g_gmem_layout);
+    set_seq = seq;
+    set_ver = gmem_version;
+    static uint32_t zero[64];
+    VkSpan zs = vk_transient_copy(zero, sizeof zero, 256);
+    VkDescriptorBufferInfo bi[64];
+    for (int i = 0; i < maxwell_gmem_chunks; i++)
+        bi[i] = gch[i].buf ? (VkDescriptorBufferInfo){gch[i].buf, 0, gch[i].size} : (VkDescriptorBufferInfo){zs.buf, zs.off, sizeof zero};
+    uint32_t m[12] = {0};
+    for (int a = 0; a < 2; a++) {
+        uint64_t b = arenas[a].n ? arenas[a].base : 0, z = arenas[a].n ? arenas[a].size : 0;
+        m[a * 4] = (uint32_t)b; m[a * 4 + 1] = (uint32_t)(b >> 32); m[a * 4 + 2] = (uint32_t)z; m[a * 4 + 3] = (uint32_t)(z >> 32);
+    }
+    m[8] = (uint32_t)arenas[1].c0;
+    VkSpan ms = vk_transient_copy(m, sizeof m, 256);
+    VkDescriptorBufferInfo mi = {ms.buf, ms.off, sizeof m};
+    VkWriteDescriptorSet w[2] = {
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0, .descriptorCount = (uint32_t)maxwell_gmem_chunks,
+         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = bi},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 1, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &mi}};
+    vkUpdateDescriptorSets(g_vk.dev, 2, w, 0, NULL);
+    return set;
+}
+
+// Vertex / index data read in place from the imported guest memory (renderer.m bind_guest does the same with
 // g_guest_buffer): no per-draw copy, no index scan for the copy size. The game fences its CPU writes as on the
-// Switch. Falls back to copies outside the heap or without the import; LARECOMP_VK_COPY_VERTICES=1 forces copies.
+// Switch. Falls back to copies outside the chunks or without the import; LARECOMP_VK_COPY_VERTICES=1 forces copies.
 static bool guest_direct(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {
     static int copy = -1;
     if (copy < 0) copy = getenv("LARECOMP_VK_COPY_VERTICES") != NULL;
-    if (copy || addr < HEAP_BASE) return false;
-    if (addr + size > HEAP_BASE + gmem_size && kernel_heap_size() != gmem_tried) { gmem_tried = kernel_heap_size(); gmem_info(); }
-    if (!gmem_buf || addr + size > HEAP_BASE + gmem_size) return false;
-    *buf = gmem_buf;
-    *off = addr - HEAP_BASE;
-    return true;
+    if (copy) return false;
+    gmem_update();
+    for (int i = 0; i < maxwell_gmem_chunks; i++)
+        if (gch[i].buf && addr >= gch[i].base && addr + size <= gch[i].base + gch[i].size) {
+            *buf = gch[i].buf;
+            *off = addr - gch[i].base;
+            return true;
+        }
+    return false;
 }
 
 static int g_cs_n;  // (compute program table below)
@@ -1560,13 +1680,13 @@ void vk_exec_reset(void) {
     memset(pipe_tab, 0, sizeof pipe_tab);
     g_cs_n = 0;
     gcopy_gen++;
-    if (gmem_buf) {
-        vkDestroyBuffer(g_vk.dev, gmem_buf, NULL);
-        vkFreeMemory(g_vk.dev, gmem_mem, NULL);
-        gmem_buf = VK_NULL_HANDLE;
-        gmem_mem = VK_NULL_HANDLE;
-    }
-    gmem_size = gmem_tried = 0;
+    vk_wait_seq(submit_seq);
+    for (int i = 0; i < 64; i++)
+        if (gch[i].buf) { vkDestroyBuffer(g_vk.dev, gch[i].buf, NULL); vkFreeMemory(g_vk.dev, gch[i].mem, NULL); }
+    memset(gch, 0, sizeof gch);
+    memset(arenas, 0, sizeof arenas);
+    arena_gen = ~0ull;
+    gmem_version++;
     st_defaults();
 }
 
@@ -1646,9 +1766,6 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
             w[n].pImageInfo = &ii[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && b->binding < 17) {
             bi[n] = cbuf_info(stage, si, (int)b->binding, gx, gy, gz);
-            w[n].pBufferInfo = &bi[n];
-        } else if (b->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-            bi[n] = gmem_info();
             w[n].pBufferInfo = &bi[n];
         } else {
             continue;  // rscale / tint: written below, once the textures (and their scales) are known
@@ -1747,6 +1864,8 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     VkDescriptorSet ds = stage_set(&cp->p, cp->p.set_layout[0], 0, 5, cp->si, NULL, NULL, gx, gy, gz, NULL);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->pipe);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->p.layout, 0, 1, &ds, 0, NULL);
+    VkDescriptorSet gs = gmem_set();
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->p.layout, GMEM_SET, 1, &gs, 0, NULL);
     vkCmdDispatch(cb, gx, gy, gz);
     stat_dispatches++;
 }
@@ -2063,8 +2182,8 @@ static void draw_(CmdRec *r, bool indexed) {
     uint64_t prof_t1_ = prof ? SDL_GetTicksNS() : 0;
     VkDescriptorSet fset = stage_set(pr, pr->set_layout[1], 1, 1, pr->fi, rs0, tint, 0, 0, 0, fii);
     if (prof) prof_sets += SDL_GetTicksNS() - prof_t1_;
-    VkDescriptorSet sets[2] = {vset, fset};
-    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->layout, 0, 2, sets, 0, NULL);
+    VkDescriptorSet sets[3] = {vset, fset, gmem_set()};
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->layout, 0, 3, sets, 0, NULL);
 
     uint64_t prof_t2_ = prof ? SDL_GetTicksNS() : 0;
     // ---- indices (copied; the largest index bounds the vertex data copied below)
@@ -2234,8 +2353,25 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
         NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
         const TexBackend *b = t ? (const TexBackend *)t->backend : NULL;
         if (!t) { LOG("[draw]   tex%d: none\n", i); continue; }
-        LOG("[draw]   tex%d: %p %ux%u f%#x lv %u -> %ux%u scale %.4f %.4f%s\n", i, (void *)t, t->width, t->height, t->format,
-            b ? b->levels : 0, b ? b->width : 0, b ? b->height : 0, b ? b->sx : 0, b ? b->sy : 0, b && b->scalable ? " scalable" : "");
+        uint64_t nz = 0, lo = ~0ull, hi = 0;  // guest memory: non-zero bytes (CPU-written contents?) and where
+        if (t->addr) for (uint64_t k = 0; k < (16u << 20) && k < (uint64_t)t->width * t->height; k++)
+            if (((const uint8_t *)(uintptr_t)t->addr)[k]) { nz++; if (k < lo) lo = k; hi = k; }
+        if (nz) LOG("[draw]   (stride %llu, non-zero bytes %llx..%llx)\n", (unsigned long long)t->stride, (unsigned long long)lo, (unsigned long long)hi);
+        if (nz && b && b->format == VK_FORMAT_R8_UNORM && b->width >= 1024 && getenv("LARECOMP_DUMP_R8")) {
+            static int nd;
+            char path[64];
+            snprintf(path, sizeof path, "build/r8_%02d.pgm", nd++);
+            debug_save_r8((TexBackend *)b, path);
+            FILE *f = fopen("build/r8_guest.pgm", "wb");  // and the guest memory it came from (linear, stride)
+            if (f) {
+                fprintf(f, "P5 %u %u 255\n", t->width, t->height);
+                for (uint32_t y = 0; y < t->height; y++) fwrite((const uint8_t *)(uintptr_t)t->addr + y * (t->stride ? t->stride : t->width), 1, t->width, f);
+                fclose(f);
+            }
+        }
+        LOG("[draw]   tex%d: %p %ux%u f%#x lv %u -> %ux%u scale %.4f %.4f%s%s%s flags %#x addr %llx nz %llu\n", i, (void *)t, t->width, t->height, t->format,
+            b ? b->levels : 0, b ? b->width : 0, b ? b->height : 0, b ? b->sx : 0, b ? b->sy : 0, b && b->scalable ? " scalable" : "",
+            b && b->gpu_owned ? " gpu" : "", b && b->dynamic ? " dyn" : "", t->flags, (unsigned long long)t->addr, (unsigned long long)nz);
     }
 }
 

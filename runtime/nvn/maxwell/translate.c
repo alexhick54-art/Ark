@@ -23,6 +23,7 @@
 #include "shader.h"
 
 uint64_t maxwell_gmem_base, maxwell_gmem_size;
+int maxwell_gmem_chunk_log2 = 30, maxwell_gmem_chunks = 8;
 const uint8_t *maxwell_dbg_code;
 uint32_t maxwell_dbg_pc;
 int maxwell_dbg_reg;
@@ -50,6 +51,26 @@ static void sp(Str *s, const char *fmt, ...) {
     vsnprintf(s->buf + s->len, n + 1, fmt, ap2);
     va_end(ap2);
     s->len += n;
+}
+
+// GLSL global memory (LDG / STG / RED): guest addresses fall in one of two arenas of imported guest memory, each
+// imported in chunks of 1 << maxwell_gmem_chunk_log2 bytes (the device's buffer range limit), bound as one array of
+// storage buffers (set 2, see shader.h). gmem_open finds the chunk (ci) and the byte offset in it (ga) and sets ok;
+// access code is written with the token gmem_ and gmem_split indexes the array with it.
+static void gmem_open(Str *o, const char *addr) {
+    uint64_t mask = (1ull << maxwell_gmem_chunk_log2) - 1;
+    sp(o, "    { ulong gaddr = %s; ulong ga = 0ul; uint ci = 0u; bool ok = false;\n", addr);
+    sp(o, "      if (gaddr - gmb0 < gms0) { ulong go = gaddr - gmb0; ci = uint(go >> %d); ga = go & 0x%llxul; ok = true; }\n",
+       maxwell_gmem_chunk_log2, (unsigned long long)mask);
+    sp(o, "      else if (gaddr - gmb1 < gms1) { ulong go = gaddr - gmb1; ci = gmm[2].x + uint(go >> %d); ga = go & 0x%llxul; ok = true; }\n",
+       maxwell_gmem_chunk_log2, (unsigned long long)mask);
+    sp(o, "      if (ci >= %du) { ci = 0u; ok = false; }\n", maxwell_gmem_chunks);
+}
+static void gmem_split(Str *o, const Str *body) {
+    for (size_t i = 0; i < body->len;) {
+        if (!strncmp(body->buf + i, "gmem_", 5)) { sp(o, "gmem_[nonuniformEXT(ci)]"); i += 5; }
+        else { sp(o, "%c", body->buf[i]); i++; }
+    }
 }
 
 typedef struct {
@@ -943,6 +964,33 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         } else {
             fail(c, "txq type %d", qt);
         }
+    } else if (OPM(0xdf58000000000000ull, 0xfff8000000000000ull)) {  // TMML: level-of-detail query
+        // coords Ra.., texture handle at cbuf offset 36..48 (*4), type 28..30, mask 31..34. Results 0 / 1: the
+        // accessed and the computed LOD as 8.8 fixed point (textureQueryLod .x / .y).
+        static const int8_t tt[8] = {TEXTYPE_1D, TEXTYPE_1D_ARRAY, TEXTYPE_2D, TEXTYPE_2D_ARRAY, TEXTYPE_3D, -1, TEXTYPE_CUBE,
+                                     TEXTYPE_CUBE_ARRAY};
+        int ty = (int)bits(w, 28, 3);
+        uint32_t mask = (uint32_t)bits(w, 31, 4);
+        if (!c->glsl || tt[ty] < 0 || (mask & 0xC)) { fail(c, "tmml type %d mask %x", ty, mask); return; }
+        int slot = tex_slot(c, (uint32_t)bits(w, 36, 13), tt[ty], false, ty == 1 || ty == 3 || ty == 7);
+        char coord[256];
+        switch (ty) {
+        case 0: sprintf(coord, "%s", F(R(a))); break;
+        case 1: sprintf(coord, "%s", F(R(a + 1))); break;
+        case 2: sprintf(coord, "vec2(%s, %s)", F(R(a)), F(R(a + 1))); break;
+        case 3: sprintf(coord, "vec2(%s, %s)", F(R(a + 1)), F(R(a + 2))); break;
+        case 7: sprintf(coord, "vec3(%s, %s, %s)", F(R(a + 1)), F(R(a + 2)), F(R(a + 3))); break;
+        default: sprintf(coord, "vec3(%s, %s, %s)", F(R(a)), F(R(a + 1)), F(R(a + 2))); break;
+        }
+        if (c->stage == STAGE_FRAGMENT) sp(&c->body, "    { vec2 lq = textureQueryLod(t%d, %s);\n", slot, coord);
+        else sp(&c->body, "    { vec2 lq = vec2(0.0);\n");  // (implicit LOD exists in fragment shaders only)
+        int n = 0;
+        for (int i = 0; i < 2; i++)
+            if (mask & (1u << i)) {
+                if (d + n < RZ) { c->reg_used[d + n] = 1; sp(&c->body, "      r%d = uint(int(round(lq[%d] * 256.0)));\n", d + n, i); }
+                n++;
+            }
+        sp(&c->body, "    }\n");
     } else if (OPM(0x5080000000000000ull, 0xfff8000000000000ull)) {  // MUFU
         int fn = (int)bits(w, 20, 4);
         const char *x = NA(F(R(a)), bits(w, 48, 1), bits(w, 46, 1));
@@ -1385,12 +1433,15 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         if (a == RZ) sprintf(addr, "ulong(%lld)", (long long)off);
         else if (wide) sprintf(addr, "((ulong(%s) << 32 | ulong(%s)) + ulong(%lld))", R(a + 1), R(a), (long long)off);
         else sprintf(addr, "(ulong(%s) + ulong(%lld))", R(a), (long long)off);
-        sp(&c->body, "    { ulong ga = %s - 0x%llxul; bool ok = ga < 0x%llxul;\n", addr,
-           (unsigned long long)maxwell_gmem_base, (unsigned long long)maxwell_gmem_size);
+        if (!c->glsl)
+            sp(&c->body, "    { ulong ga = %s - 0x%llxul; bool ok = ga < 0x%llxul;\n", addr,
+               (unsigned long long)maxwell_gmem_base, (unsigned long long)maxwell_gmem_size);
         static const char *const ld_small[] = {"uint(gmem[ga])", "uint(int(char(gmem[ga])))",
                                                "uint(*(device ushort *)(gmem + ga))", "uint(int(*(device short *)(gmem + ga)))"};
         int nw = size == 5 ? 2 : size >= 6 ? 4 : 1;
         if (c->glsl) {  // gmem_.w[]: 32-bit words; sub-word accesses within the containing word
+            Str gb = {0};
+            gmem_open(&c->body, addr);
             static const char *const gl_small[] = {
                 "(gmem_.w[uint(ga >> 2)] >> (uint(ga & 3ul) * 8u)) & 0xFFu",
                 "uint(sx8(gmem_.w[uint(ga >> 2)] >> (uint(ga & 3ul) * 8u)))",
@@ -1398,24 +1449,26 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                 "uint(sx16(gmem_.w[uint(ga >> 2)] >> (uint(ga & 2ul) * 8u)))"};
             if (!store) {
                 if (size < 4) {
-                    if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      if (ok) r%d = %s; else r%d = 0u;\n", d, gl_small[size], d); }
+                    if (d != RZ) { c->reg_used[d] = 1; sp(&gb, "      if (ok) r%d = %s; else r%d = 0u;\n", d, gl_small[size], d); }
                 } else {
                     for (int k = 0; k < nw; k++)
                         if (d != RZ && d + k < RZ) {
                             c->reg_used[d + k] = 1;
-                            sp(&c->body, "      if (ok) r%d = gmem_.w[uint(ga >> 2) + %du]; else r%d = 0u;\n", d + k, k, d + k);
+                            sp(&gb, "      if (ok) r%d = gmem_.w[uint(ga >> 2) + %du]; else r%d = 0u;\n", d + k, k, d + k);
                         }
                 }
             } else {
                 c->uses_gmem_store = true;
                 if (size < 4)
-                    sp(&c->body, "      if (ok) { uint wi = uint(ga >> 2); uint sh = uint(ga & %s) * 8u; atomicAnd(gmem_.w[wi], ~(0x%xu << sh)); "
+                    sp(&gb, "      if (ok) { uint wi = uint(ga >> 2); uint sh = uint(ga & %s) * 8u; atomicAnd(gmem_.w[wi], ~(0x%xu << sh)); "
                        "atomicOr(gmem_.w[wi], (%s & 0x%xu) << sh); }\n", size < 2 ? "3ul" : "2ul", size < 2 ? 0xFFu : 0xFFFFu, R(d),
                        size < 2 ? 0xFFu : 0xFFFFu);
                 else
                     for (int k = 0; k < nw; k++)
-                        sp(&c->body, "      if (ok) gmem_.w[uint(ga >> 2) + %du] = %s;\n", k, R(d == RZ ? RZ : d + k));
+                        sp(&gb, "      if (ok) gmem_.w[uint(ga >> 2) + %du] = %s;\n", k, R(d == RZ ? RZ : d + k));
             }
+            gmem_split(&c->body, &gb);
+            free(gb.buf);
         } else if (!store) {
             if (size < 4) {
                 if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      r%d = ok ? %s : 0u;\n", d, ld_small[size]); }
@@ -1443,12 +1496,13 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         if (a == RZ) sprintf(addr, "ulong(%lluu)", (unsigned long long)bits(w, 28, 20));
         else if (e) sprintf(addr, "((ulong(%s) << 32 | ulong(%s)) + ulong(%lld))", R(a + 1), R(a), (long long)sbits(w, 28, 20));
         else sprintf(addr, "(ulong(%s) + ulong(%lld))", R(a), (long long)sbits(w, 28, 20));
-        sp(&c->body, "    { ulong ga = %s - 0x%llxul; if (ga < 0x%llxul) { uint wi = uint(ga >> 2);\n", addr,
-           (unsigned long long)maxwell_gmem_base, (unsigned long long)maxwell_gmem_size);
+        gmem_open(&c->body, addr);
+        Str gb = {0};
+        sp(&gb, "      if (ok) { uint wi = uint(ga >> 2);\n");
         const char *v = R(d);
         if (size == 0 || size == 1) {  // U32 / S32
             static const char *const direct[] = {"atomicAdd", NULL, NULL, NULL, NULL, "atomicAnd", "atomicOr", "atomicXor"};
-            if (direct[op]) sp(&c->body, "      %s(gmem_.w[wi], %s);\n", direct[op], v);
+            if (direct[op]) sp(&gb, "      %s(gmem_.w[wi], %s);\n", direct[op], v);
             else {  // MIN / MAX (signedness from the size) and the wrapping INC / DEC: compare-and-swap loop
                 const char *nv;
                 char nb[256];
@@ -1456,22 +1510,25 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                 else if (op == 2) nv = size ? (sprintf(nb, "uint(max(int(o), int(%s)))", v), nb) : (sprintf(nb, "max(o, %s)", v), nb);
                 else if (op == 3) nv = (sprintf(nb, "(o >= %s ? 0u : o + 1u)", v), nb);
                 else nv = (sprintf(nb, "((o == 0u || o > %s) ? %s : o - 1u)", v, v), nb);
-                sp(&c->body, "      uint o = gmem_.w[wi]; for (int it = 0; it < 64; it++) { uint p = atomicCompSwap(gmem_.w[wi], o, %s); "
+                sp(&gb, "      uint o = gmem_.w[wi]; for (int it = 0; it < 64; it++) { uint p = atomicCompSwap(gmem_.w[wi], o, %s); "
                    "if (p == o) break; o = p; }\n", nv);
             }
         } else if ((size == 2 || size == 5) && op == 0) {  // U64 / S64 add: low word, then the high word with the carry
-            sp(&c->body, "      uint lo = atomicAdd(gmem_.w[wi], %s); uint cy = (lo + %s < lo) ? 1u : 0u;\n", v, v);
-            sp(&c->body, "      atomicAdd(gmem_.w[wi + 1u], %s + cy);\n", R(d == RZ ? RZ : d + 1));
+            sp(&gb, "      uint lo = atomicAdd(gmem_.w[wi], %s); uint cy = (lo + %s < lo) ? 1u : 0u;\n", v, v);
+            sp(&gb, "      atomicAdd(gmem_.w[wi + 1u], %s + cy);\n", R(d == RZ ? RZ : d + 1));
         } else if ((size == 2 || size == 5) && op >= 5 && op <= 7) {  // 64-bit AND / OR / XOR: per word
             static const char *const fn[] = {"atomicAnd", "atomicOr", "atomicXor"};
-            sp(&c->body, "      %s(gmem_.w[wi], %s); %s(gmem_.w[wi + 1u], %s);\n", fn[op - 5], v, fn[op - 5], R(d == RZ ? RZ : d + 1));
+            sp(&gb, "      %s(gmem_.w[wi], %s); %s(gmem_.w[wi + 1u], %s);\n", fn[op - 5], v, fn[op - 5], R(d == RZ ? RZ : d + 1));
         } else if (size == 3 && op == 0) {  // F32 add
-            sp(&c->body, "      uint o = gmem_.w[wi]; for (int it = 0; it < 64; it++) { uint p = atomicCompSwap(gmem_.w[wi], o, "
+            sp(&gb, "      uint o = gmem_.w[wi]; for (int it = 0; it < 64; it++) { uint p = atomicCompSwap(gmem_.w[wi], o, "
                "floatBitsToUint(uintBitsToFloat(o) + uintBitsToFloat(%s))); if (p == o) break; o = p; }\n", v);
         } else {
             fail(c, "red size %d op %d", size, op);
         }
-        sp(&c->body, "    } }\n");
+        sp(&gb, "      }\n");
+        gmem_split(&c->body, &gb);
+        free(gb.buf);
+        sp(&c->body, "    }\n");
     } else if (OPM(0xeb20000000000000ull, 0xffe0000000000000ull) || OPM(0xeb40000000000000ull, 0xffe0000000000000ull)) {
         // SUST / SURED: stores and reductions to a storage image. Image bindings aren't wired to Vulkan yet, so the
         // write is dropped (the rest of the shader runs).
@@ -1751,6 +1808,7 @@ static const char glsl_prelude[] =
     "#extension GL_KHR_shader_subgroup_shuffle : require\n"
     "#extension GL_KHR_shader_subgroup_shuffle_relative : require\n"
     "#extension GL_EXT_texture_shadow_lod : require\n"
+    "#extension GL_EXT_nonuniform_qualifier : require\n"
     "#define cbr(cb, off) cb[min((off) >> 4, uint(cb.length() - 1))][((off) >> 2) & 3u]\n"
     "uint as_u(float x) { return floatBitsToUint(x); }\n"
     "uint as_u(uint x) { return x; }\n"
@@ -1823,8 +1881,13 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         sp(&s, "layout(std140, set = %d, binding = %d) uniform CB%d { uvec4 cb%d[%u]; };\n", set, i, i, i, n);
     }
     if (info->uses_gmem)
-        sp(&s, "layout(std430, set = %d, binding = %d) %sbuffer GMem { uint w[]; } gmem_;\n", set, GMEM_BUFFER_INDEX,
-           c->uses_gmem_store ? "" : "readonly ");
+    {
+        sp(&s, "layout(std430, set = %d, binding = 0) %sbuffer GMem { uint w[]; } gmem_[%d];\n", GMEM_SET,
+           c->uses_gmem_store ? "" : "readonly ", maxwell_gmem_chunks);
+        sp(&s, "layout(std140, set = %d, binding = 1) uniform GMemMap { uvec4 gmm[3]; };\n", GMEM_SET);
+        sp(&s, "#define gmb0 (uint64_t(gmm[0].y) << 32 | uint64_t(gmm[0].x))\n#define gms0 (uint64_t(gmm[0].w) << 32 | uint64_t(gmm[0].z))\n");
+        sp(&s, "#define gmb1 (uint64_t(gmm[1].y) << 32 | uint64_t(gmm[1].x))\n#define gms1 (uint64_t(gmm[1].w) << 32 | uint64_t(gmm[1].z))\n");
+    }
     if (c->uses_rscale && stage != STAGE_VERTEX) {
         sp(&s, "layout(std140, set = %d, binding = 18) uniform RScale { vec4 rscale[65]; };\n", set);
         info->uses_rscale = true;

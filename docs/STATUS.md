@@ -4,19 +4,18 @@ Read this first when resuming work. It records what is done, how it was measured
 
 Target: Pokémon Legends: Arceus v1.1.1, main build ID `AEE8F150DDA1B5A838806E1A5EA6827AD9F3C51E`.
 
-## Where it stands (2026-10-15)
+## Where it stands (2026-10-15, evening)
 
-**The recompiled game draws its first frames.** On Linux, through Ark's NVN-on-Vulkan layer, it boots, renders the
-"Presented by Game Freak" logo correctly at 1920x1080, and runs for about 135 frames. Then it opens the title
-screen's particle file (`bin/effect/field/particle/uiux/game_start/ef_uiux_game_start00.ptcl`), which isn't in the
-partial RomFS used for testing, and crashes in `nn::util::BinaryFileHeader::IsSignatureValid` on the null buffer.
-The fix is more RomFS, not code (the title sequence's file list is under "Next").
+**The recompiled game reaches the opening scene.** On Linux, through Ark's NVN-on-Vulkan layer (tested on lavapipe), it
+boots, shows the Game Freak logo and the first-boot language menu. After English is picked, it plays the opening:
+Arceus's realm with its particle effects, and the dialogue box with text ("Welcome to my realm, located beyond both
+time and space."). Scripted A presses (`LARECOMP_INPUT`) drive it.
 
 | Milestone | State |
 |---|---|
 | 1. Translate all code to C, compile it | **done** |
 | 2. Headless boot to the first GPU call | **done** (Linux x86-64) |
-| 3. NVN on Vulkan + shader translation: first frame | **first frame done**; title screen next |
+| 3. NVN on Vulkan + shader translation: first frame | **done**: logo, language menu, opening scene with text |
 | 4. Audio out, input, saves, the field | later |
 
 ## Milestone 1: translation
@@ -88,11 +87,26 @@ result. That is the start of milestone 3.
   The game asks for 524 NVN functions; 495 have implementations, and the rest log once and return 0.
   `vulkan/device.c` enables only the device features that are present (`ARK_FEAT`).
 - **Shaders:** Maxwell → GLSL (`maxwell/translate.c`) → SPIR-V (shaderc). Ark added:
-  - `RED` (global reductions: 32-bit add/min/max/inc/dec/and/or/xor, 64-bit add/and/or/xor, f32 add) on the
-    guest-heap storage buffer.
+  - `RED` (global reductions), `VMNMX`, `TMML` (LOD query; the effect shaders use it).
   - `SUST`/`SURED` are accepted, but **their writes are dropped**: storage images aren't bound to Vulkan yet
-    (`CMD_BIND_IMAGES` is recorded but not used). The two logo-time programs that hit this clear an image, then
-    accumulate into it, and are logged as "image stores dropped". `SULD` isn't implemented.
+    (`CMD_BIND_IMAGES` is recorded but not used). The programs that hit this are a per-frame depth / tile pass
+    (480x270, no colour output); they are logged as "image stores dropped". `SULD` isn't implemented.
+- **Shader global memory (LDG/STG/RED) and in-place vertex data** (the big one). LAS imported its game's heap
+  (`HEAP_BASE`) as one GPU buffer. Legends: Arceus never uses that heap: its SDK runs in virtual-address-memory mode
+  (main.npdm system resource; without it `svcBreak`), so everything lives in `svcMapPhysicalMemory` mappings in the
+  alias region, in two clusters: ~600 maps of 256-512 KB from `0x74_0000_0000` (span ~1.25 GB) and one 3.2 GB map at
+  `0x7b_77b0_0000`. The text renderer's vertex shader reads its per-glyph data with LDG from there, so text was
+  invisible. Now (`exec.c gmem_update`):
+  - the two clusters are **arenas**, imported (`VK_EXT_external_memory_host`) in **chunks** of the device's buffer
+    limit (largest power of two within `maxStorageBufferRange` and `maxMemoryAllocationSize`, at most 1 GB: 128 MB
+    on lavapipe);
+  - every program sees them through one global descriptor set (`GMEM_SET` = 2): an array of chunk buffers indexed
+    `nonuniformEXT`, and a small uniform with the arena bases / sizes (`maxwell/shader.h`);
+  - vertex / index buffers inside a chunk are bound in place (no per-draw copy).
+  - The kernel exposes the mappings (`kernel_phys_regions`, `kernel_phys_gen`); arena 0 grows chunk by chunk.
+    Memory cost: imports pin their pages, including the unmapped gaps inside arena 0 (~1 GB).
+- **CPU-written textures:** `nvnMemoryPoolFlushMappedRange` / `nvnBufferFlushMappedRange` ranges now mark
+  overlapping textures for a full re-hash at their next use (`textures.c backend_pool_written`).
 - **Kernel fixes found on the way:**
   - A timed condition-variable wait that times out returns without re-acquiring the mutex (Horizon semantics; the
     SDK re-locks). LAS re-acquired it, which deadlocked.
@@ -117,14 +131,14 @@ SwiftShader lacks `shaderInt64` and crashes on the shaders. Building lavapipe he
 - `-Dcpp_rtti=false`
 - a one-line patch to `lvp_device.c` so its WSI platform is always on, for a headless surface
 
-`LARECOMP_SHOT_AT=5,40` saves those frames to `build/frames/` in the game folder, `LARECOMP_SAVE_MSL=1` keeps the
+See [TESTING-lavapipe.md](TESTING-lavapipe.md). `LARECOMP_SHOT_AT=5,40` saves those frames to `build/frames/` in the game folder, `LARECOMP_SAVE_MSL=1` keeps the
 generated GLSL in `build/glsl/`, `ARK_RUN_SECONDS=N` exits after N seconds, and `ARK_LOG_OPEN=1` logs every file open.
 
 ### Next
 
-1. **RomFS for the title screen** (requested from the user): the title sequence `bin/demo/sequence/sd9010_title.bseq`
-   loads `bin/demo/graphic/sd/sd9010/*` models, `bin/effect/demo/sd9010/*.ptcl`,
-   `bin/effect/field/particle/uiux/game_start/*.ptcl` and `bin/appli/title_demo/bin/title_demo_01.arc`.
+1. **RomFS:** the test image has boot, sound (minus `Default.pck`), core, UI, resident, title and story folders
+   (~1.8 GB of 6.4). `romfs_field` (`bin\archive\field bin\field\model bin\effect\field`) and `romfs_pokemon`
+   (`bin\archive\pokemon bin\appli\res_pokemon`) are requested; battle effects and `Default.pck` after that.
 2. **Storage images:** bind `st.img` as Vulkan storage images and translate `SUST`/`SULD`/`SURED`/`SUATOM`.
 3. **Windows build** on the user's PC (RX 9070 XT): the first run needs real-GPU feedback.
 4. `pl:u` and `ectx:aw` are logging stubs. The game draws its text from its own fonts, so this hasn't mattered yet.

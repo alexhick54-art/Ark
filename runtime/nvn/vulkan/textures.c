@@ -411,6 +411,37 @@ void vk_textures_reset(void) {
     LOG("[vk] reboot: %d textures released\n", n);
 }
 
+// CPU writes the game announces (nvnMemoryPoolFlushMappedRange / nvnBufferFlushMappedRange): a texture whose
+// memory overlaps one is hashed in full at its next use instead of waiting for the sampled check (nn::font's glyph
+// cache adds a few glyphs to a big texture, which the sparse sample hash misses).
+#define FLUSH_RING 256
+static struct { uint64_t lo, hi; } flush_ring[FLUSH_RING];
+static uint64_t flush_seq;  // ranges recorded so far
+static pthread_mutex_t flush_lock = PTHREAD_MUTEX_INITIALIZER;
+void backend_pool_written(uint64_t addr, uint64_t size) {
+    if (!size) return;
+    pthread_mutex_lock(&flush_lock);
+    flush_ring[flush_seq % FLUSH_RING].lo = addr;
+    flush_ring[flush_seq % FLUSH_RING].hi = addr + size;
+    flush_seq++;
+    pthread_mutex_unlock(&flush_lock);
+}
+// Whether [lo, hi) was flushed since *seen (updated). Ranges older than the ring count as flushed.
+static bool flushed_since(uint64_t *seen, uint64_t lo, uint64_t hi) {
+    bool hit = false;
+    pthread_mutex_lock(&flush_lock);
+    uint64_t now = flush_seq;
+    if (now - *seen > FLUSH_RING) hit = *seen != 0;
+    else
+        for (uint64_t i = *seen; i < now && !hit; i++) {
+            uint64_t k = i % FLUSH_RING;
+            hit = flush_ring[k].lo < hi && flush_ring[k].hi > lo;
+        }
+    *seen = now;
+    pthread_mutex_unlock(&flush_lock);
+    return hit;
+}
+
 // ================================================================== uploads (same change detection as metal.m)
 static uint64_t full_hash_budget, full_hash_budget_frame;
 
@@ -464,11 +495,12 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     if (!t->addr || t->target == 10) return;
     uint64_t frame = vk_frame_counter();
     if (b->uploaded && b->checked_frame == frame) return;
-    if (b->uploaded && !b->dynamic && ((frame + ((uintptr_t)b >> 6)) & 7)) return;
     const FormatInfo *fi = t->layout.fmt;
     if (!fi || !fi->bpb) return;
-    VkFmt mf = fmt_of(t->format);
     uint64_t total = tegra_total_size(&t->layout);
+    bool flushed = b->uploaded && flushed_since(&b->flush_seen, t->addr, t->addr + total);
+    if (b->uploaded && !b->dynamic && !flushed && ((frame + ((uintptr_t)b >> 6)) & 7)) return;
+    VkFmt mf = fmt_of(t->format);
     b->checked_frame = frame;
     prof_tex_checks++;
     if (t->flags & 0x10) b->dynamic = true;
@@ -476,7 +508,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     const uint8_t *mem = (const uint8_t *)(uintptr_t)t->addr;
     static int always_full = -1;
     if (always_full < 0) always_full = getenv("LARECOMP_TEX_FULLHASH") ? 1 : 0;
-    bool full = b->dynamic || !b->uploaded || always_full;
+    bool full = b->dynamic || !b->uploaded || always_full || flushed;
     if (!full && frame - b->full_frame >= 120 && full_hash_budget >= total) { full = true; full_hash_budget -= total; }
     if (!b->tp) b->tp = texpatch_identify(t) + 1;  // (button prompts / Hero Mode icon: re-uploaded when their look changes)
     bool restyle = b->tp > 0 && b->uploaded && b->tp_gen != texpatch_generation();
@@ -573,7 +605,6 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
 
 void renderer_mark_gpu_owned(NvnTexture *t) { tex_backend(t)->gpu_owned = true; }
 bool renderer_is_gpu_owned(NvnTexture *t) { return tex_backend(t)->gpu_owned; }
-void backend_pool_written(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 
 // Host-produced texel data (decoded video, any thread): applied on the render thread at the texture's next use.
 void renderer_upload_rgba(NvnTexture *t, const void *rgba, uint32_t w, uint32_t h, uint32_t stride) {

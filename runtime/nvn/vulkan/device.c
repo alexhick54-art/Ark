@@ -170,7 +170,8 @@ static void create_device(void) {
     VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
                                             .timelineSemaphore = VK_TRUE, .shaderInt8 = VK_TRUE, .samplerMirrorClampToEdge = VK_TRUE,
                                             .uniformAndStorageBuffer8BitAccess = VK_TRUE, .storageBuffer8BitAccess = VK_TRUE,
-                                            .scalarBlockLayout = VK_TRUE, .pNext = &f13};
+                                            .scalarBlockLayout = VK_TRUE, .shaderStorageBufferArrayNonUniformIndexing = VK_TRUE,
+                                            .pNext = &f13};
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
                                             .storageBuffer16BitAccess = VK_TRUE, .pNext = &f12};
     {   // Ark: request only what the device has (CPU drivers used for testing lack some); log what's missing
@@ -188,6 +189,8 @@ static void create_device(void) {
         ARK_FEAT(f12.uniformAndStorageBuffer8BitAccess, h12.uniformAndStorageBuffer8BitAccess, "uniformAndStorageBuffer8BitAccess")
         ARK_FEAT(f12.storageBuffer8BitAccess, h12.storageBuffer8BitAccess, "storageBuffer8BitAccess")
         ARK_FEAT(f12.scalarBlockLayout, h12.scalarBlockLayout, "scalarBlockLayout")
+        ARK_FEAT(f12.shaderStorageBufferArrayNonUniformIndexing, h12.shaderStorageBufferArrayNonUniformIndexing,
+                 "shaderStorageBufferArrayNonUniformIndexing")
         ARK_FEAT(f13.dynamicRendering, h13.dynamicRendering, "dynamicRendering")
         ARK_FEAT(f13.synchronization2, h13.synchronization2, "synchronization2")
         ARK_FEAT(f13.shaderDemoteToHelperInvocation, h13.shaderDemoteToHelperInvocation, "shaderDemoteToHelperInvocation")
@@ -223,6 +226,25 @@ static void create_device(void) {
                              .pQueueCreateInfos = &qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
+
+    {   // Ark: shader global memory is imported in chunks the device can bind as one storage buffer each
+        // (exec.c gmem_update; maxwell/shader.h GMEM_SET): the largest power of two within its limits, up to 1 GB
+        VkPhysicalDeviceMaintenance3Properties m3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES};
+        VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &m3};
+        vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
+        uint64_t lim = p2.properties.limits.maxStorageBufferRange;
+        if (m3.maxMemoryAllocationSize && m3.maxMemoryAllocationSize < lim) lim = m3.maxMemoryAllocationSize;
+        int lg = 20;
+        while (lg < 30 && (2ull << lg) <= lim) lg++;
+        extern int maxwell_gmem_chunk_log2, maxwell_gmem_chunks;
+        maxwell_gmem_chunk_log2 = lg;
+        int nch = (int)((8ull << 30) >> lg);  // (8 GB of arenas; Legends: Arceus maps about 4.5)
+        uint32_t maxsb = p2.properties.limits.maxPerStageDescriptorStorageBuffers;
+        if (nch > 64) nch = 64;
+        if ((uint32_t)nch > maxsb) nch = (int)maxsb;
+        maxwell_gmem_chunks = nch;
+        LOG("[vk] shader global memory: %d chunks of %llu MB\n", nch, (unsigned long long)(1ull << (lg - 20)));
+    }
 
     VmaAllocatorCreateInfo ai = {.physicalDevice = g_vk.phys, .device = g_vk.dev, .instance = g_vk.inst,
                                  .vulkanApiVersion = VK_API_VERSION_1_3};

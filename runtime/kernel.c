@@ -1,4 +1,6 @@
 // A small Horizon kernel: handles, threads, synchronization, memory, and the SVC dispatcher.
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -160,6 +162,19 @@ static void region_carve(uint64_t addr, uint64_t size) {
         nregions--;
         i--;
     }
+}
+
+static _Atomic uint64_t phys_gen;
+static pthread_mutex_t phys_lock = PTHREAD_MUTEX_INITIALIZER;  // (the renderer reads the list from its own thread)
+uint64_t kernel_phys_gen(void) { return phys_gen; }
+int kernel_phys_regions(uint64_t *addr, uint64_t *size, int max, uint64_t *gen) {
+    pthread_mutex_lock(&phys_lock);
+    int n = 0;
+    for (int i = 0; i < nregions && n < max; i++)
+        if (regions[i].type == 0x7) { addr[n] = regions[i].addr; size[n] = regions[i].size; n++; }
+    if (gen) *gen = phys_gen;
+    pthread_mutex_unlock(&phys_lock);
+    return n;
 }
 
 static void region_map_physical(uint64_t addr, uint64_t size) {
@@ -810,13 +825,21 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         break;
     }
     case 0x2C:  // MapPhysicalMemory(addr, size)
+        if (getenv("ARK_LOG_PHYS")) LOG("[phys] map %llx +%llx\n", (unsigned long long)x[0], (unsigned long long)x[1]);
         // Ark: pages already mapped keep their contents (the SDK's heap keeps its header at the start of the range it
         // extends; LAS zeroed the whole range). Never-touched pages are zero already, unmapped ones were discarded.
+        pthread_mutex_lock(&phys_lock);
         region_map_physical(x[0], x[1]);
+        phys_gen++;
+        pthread_mutex_unlock(&phys_lock);
         x[0] = R_OK;
         break;
     case 0x2D:  // UnmapPhysicalMemory(addr, size)
+        if (getenv("ARK_LOG_PHYS")) LOG("[phys] unmap %llx +%llx\n", (unsigned long long)x[0], (unsigned long long)x[1]);
+        pthread_mutex_lock(&phys_lock);
         region_carve(x[0], x[1]);
+        phys_gen++;
+        pthread_mutex_unlock(&phys_lock);
         plat_discard(x[0], x[1]);  // a later map of these pages must see zeroes
         x[0] = R_OK;
         break;
