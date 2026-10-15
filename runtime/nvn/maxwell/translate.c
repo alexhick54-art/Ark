@@ -1477,6 +1477,36 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         // write is dropped (the rest of the shader runs).
         c->info->drops_image_writes = true;
         sp(&c->body, "    /* %s dropped */\n", (w >> 53) == (0xeb40000000000000ull >> 53) ? "sured" : "sust");
+    } else if (OPM(0x3a00000000000000ull, 0xfe00000000000000ull)) {  // VMNMX (video min/max; MIN / MAX second op)
+        // a: Ra(8..15), width 37..38, selector 36..37, sign 48; b: Rb(20..27) (bit 50) or a 16-bit immediate
+        // (20..35), width 29..30, selector 28..29, sign 49; c: Rc(39..46). d = op2(mx ? max(a, b) : min(a, b), c),
+        // the first comparison signed per b's sign, the second per bit 54.
+        if (bits(w, 47, 1) || bits(w, 55, 1)) { fail(c, "vmnmx cc/sat"); return; }
+        int op = (int)bits(w, 51, 3);
+        if (op != 5 && op != 6) { fail(c, "vmnmx op %d", op); return; }
+        bool breg = bits(w, 50, 1), asg = bits(w, 48, 1), bsg = bits(w, 49, 1), dsg = bits(w, 54, 1);
+        char av[160], bv[160];
+        int aw = (int)bits(w, 37, 2), as = (int)bits(w, 36, 2);
+        int bw = breg ? (int)bits(w, 29, 2) : 2, bs = breg ? (int)bits(w, 28, 2) : 0;
+        const char *araw = R(a);
+        char bimm[32];
+        const char *braw = breg ? R((int)bits(w, 20, 8)) : (sprintf(bimm, "%uu", (unsigned)bits(w, 20, 16)), bimm);
+        const char *srcs[2] = {araw, braw};
+        int widths[2] = {aw, bw}, sels[2] = {as, bs};
+        bool sgs[2] = {asg, bsg};
+        char *outs[2] = {av, bv};
+        for (int k = 0; k < 2; k++) {
+            int bitsz = widths[k] == 3 ? 32 : widths[k] == 2 ? 16 : 8;
+            int sh = bitsz == 32 ? 0 : 32 - bitsz - sels[k] * bitsz;
+            if (sh < 0) sh = 0;
+            if (bitsz == 32) sprintf(outs[k], bsg ? "int(%s)" : "uint(%s)", srcs[k]);
+            else if (sgs[k]) sprintf(outs[k], bsg ? "((int(%s) << %d) >> %d)" : "uint((int(%s) << %d) >> %d)", srcs[k], sh, 32 - bitsz);
+            else sprintf(outs[k], bsg ? "int((%s >> %du) & 0x%xu)" : "((%s >> %du) & 0x%xu)", srcs[k], sels[k] * bitsz, (1u << bitsz) - 1);
+        }
+        const char *cv = R((int)bits(w, 39, 8));
+        sprintf(t, "uint(%s(%s(%s(%s, %s)), %s(%s)))", op == 5 ? "min" : "max", dsg ? "int" : "uint",
+                bits(w, 56, 1) ? "max" : "min", av, bv, dsg ? "int" : "uint", cv);
+        set_reg(c, d, t);
     } else if (emit_half(c, w)) {
     } else if (OPM(0x50f8000000000000ull, 0xfff8000000000000ull)) {  // FSWZADD
         // per quad lane (laneid & 3), 2 bits of the swizzle pick: a+b, b-a, a-b, b
