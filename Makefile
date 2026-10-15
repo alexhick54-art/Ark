@@ -68,7 +68,7 @@ RTFLAGS  := -O1 -g -std=gnu11 $(MFLAGS) $(OSFLAGS) -fno-strict-aliasing -Iruntim
             -Wall -Wno-unused-function -Wno-format
 RT_HDRS  := $(wildcard runtime/*.h runtime/nvn/*.h runtime/nvn/*/*.h) runtime/include/cpu.h
 
-.PHONY: help gen objs ark mkromfs test-lift clean
+.PHONY: help gen objs rt ark mkromfs test-lift clean
 help:
 	@echo "Ark build targets (see docs/BUILD-windows.md or README.md):"
 	@echo "  make gen EXEFS=game/exefs   translate the game's code to C (folder with main, sdk, subsdk0, subsdk1)"
@@ -98,6 +98,8 @@ $(B)/inc/smaa_hlsl.inc: third_party/smaa/SMAA.hlsl
 	@mkdir -p $(dir $@)
 	LC_ALL=C tr -d '\r' < $< | LC_ALL=C tr '\200-\377' '?' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/"/' -e 's/$$/\\n"/' > $@
 $(B)/rt/nvn/smaa_data.o: $(B)/inc/smaa_hlsl.inc
+
+rt: $(RT_OBJ)
 
 ark: $(EXE)
 $(EXE): $(RT_OBJ) $(GEN_OBJ)
