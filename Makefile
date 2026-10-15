@@ -30,7 +30,22 @@ GENFLAGS := -O1 $(MFLAGS) -fno-strict-aliasing -Wno-return-type -Wno-unused-labe
 GEN_SRC  := $(wildcard $(GEN)/*/*.c)
 GEN_OBJ  := $(patsubst $(GEN)/%.c,$(B)/obj/%.o,$(GEN_SRC))
 
-RT_SRC   := $(wildcard runtime/*.c) runtime/platform/linux.c $(wildcard runtime/services/*.c) $(wildcard runtime/hle/*.c)
+ifeq ($(OS),Windows_NT)
+# Windows: MSYS2 UCRT64 shell (tools/setup_windows.ps1, docs/BUILD-windows.md)
+PLATFORM := runtime/platform/windows.c
+EXE      := $(B)/ark.exe
+OSFLAGS  := -D_WIN32_WINNT=0x0A00 -D_FILE_OFFSET_BITS=64 -D_POSIX_THREAD_SAFE_FUNCTIONS -D_CRT_RAND_S \
+            -DWIN32_LEAN_AND_MEAN -DNOMINMAX
+PY       ?= $(if $(wildcard tools/venv/Scripts/python.exe),tools/venv/Scripts/python.exe,python)
+else
+PLATFORM := runtime/platform/linux.c
+EXE      := $(B)/ark
+OSFLAGS  :=
+PY       ?= python3
+endif
+GENFLAGS += $(OSFLAGS)
+
+RT_SRC   := $(wildcard runtime/*.c) $(PLATFORM) $(wildcard runtime/services/*.c) $(wildcard runtime/hle/*.c)
 HEADLESS ?= 0
 ifeq ($(HEADLESS),1)
 # no renderer, no SDL: the NVN layer, input and the menu hooks stay out
@@ -41,16 +56,21 @@ else
 RT_SRC   += $(wildcard runtime/nvn/*.c) $(wildcard runtime/nvn/maxwell/*.c) $(wildcard runtime/nvn/vulkan/*.c)
 RT_CXX   := $(wildcard runtime/nvn/vulkan/*.cpp)
 RTDEFS   := $(if $(DEPS),-I$(DEPS)/include) -Iruntime/nvn -I$(B)/inc -Ithird_party/smaa/Textures
-LDLIBS   := $(if $(DEPS),-L$(DEPS)/lib -Wl,-rpath,$(DEPS)/lib) -lSDL3 -lvulkan -lshaderc_shared -lstdc++ -lpthread -lm -ldl
+ifeq ($(OS),Windows_NT)
+LDLIBS   := -fuse-ld=lld -Wl,--stack,16777216 $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 -lvulkan-1 -lshaderc_shared -lopus \
+            -lstdc++ -lwinmm -lole32 -lshell32 -lcomdlg32 -luuid -lpthread
+else
+LDLIBS   := $(if $(DEPS),-L$(DEPS)/lib -Wl,-rpath,$(DEPS)/lib) -lSDL3 -lvulkan -lshaderc_shared -lopus -lstdc++ -lpthread -lm -ldl
+endif
 endif
 RT_OBJ   := $(patsubst runtime/%.c,$(B)/rt/%.o,$(RT_SRC)) $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(RT_CXX))
-RTFLAGS  := -O1 -g -std=gnu11 $(MFLAGS) -fno-strict-aliasing -Iruntime/include -Iruntime $(RTDEFS) \
+RTFLAGS  := -O1 -g -std=gnu11 $(MFLAGS) $(OSFLAGS) -fno-strict-aliasing -Iruntime/include -Iruntime $(RTDEFS) \
             -Wall -Wno-unused-function -Wno-format
 RT_HDRS  := $(wildcard runtime/*.h runtime/nvn/*.h runtime/nvn/*/*.h) runtime/include/cpu.h
 
 .PHONY: gen objs ark mkromfs test-lift clean
 gen:
-	python3 tools/gen_all.py $(EXEFS) $(GEN) --simd $(SIMD)
+	$(PY) tools/gen_all.py $(EXEFS) $(GEN) --simd $(SIMD)
 
 objs: $(GEN_OBJ)
 	@echo "compiled $(words $(GEN_OBJ)) files"
@@ -65,7 +85,7 @@ $(B)/rt/%.o: runtime/%.c $(RT_HDRS)
 
 $(B)/rt/%.o: runtime/%.cpp $(RT_HDRS)
 	@mkdir -p $(dir $@)
-	$(CXX) -O2 -g -std=c++17 $(MFLAGS) $(RTDEFS) -Iruntime -c $< -o $@
+	$(CXX) -O2 -g -std=c++17 $(MFLAGS) $(OSFLAGS) $(RTDEFS) -Iruntime -c $< -o $@
 
 # SMAA's reference shader source as a C string (runtime/nvn/smaa_data.c)
 $(B)/inc/smaa_hlsl.inc: third_party/smaa/SMAA.hlsl
@@ -73,17 +93,17 @@ $(B)/inc/smaa_hlsl.inc: third_party/smaa/SMAA.hlsl
 	LC_ALL=C tr -d '\r' < $< | LC_ALL=C tr '\200-\377' '?' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/"/' -e 's/$$/\\n"/' > $@
 $(B)/rt/nvn/smaa_data.o: $(B)/inc/smaa_hlsl.inc
 
-ark: $(B)/ark
-$(B)/ark: $(RT_OBJ) $(GEN_OBJ)
-	$(CC) -o $@ $(RT_OBJ) $(GEN_OBJ) $(LDLIBS) -rdynamic
+ark: $(EXE)
+$(EXE): $(RT_OBJ) $(GEN_OBJ)
+	$(CC) -o $@ $(RT_OBJ) $(GEN_OBJ) $(LDLIBS) $(if $(filter Windows_NT,$(OS)),,-rdynamic)
 
 mkromfs: $(B)/mkromfs
 $(B)/mkromfs: tools/mkromfs/mkromfs.c runtime/romfs_build.c
 	@mkdir -p $(dir $@)
-	$(CC) -O2 -Iruntime -Iruntime/include -o $@ $^
+	$(CC) -O2 $(OSFLAGS) -Iruntime -Iruntime/include -o $@ $^
 
 test-lift:
-	cd tools/lifter && python3 test_lift.py ../../$(EXEFS)/main 0x7000000000 20000 1
+	cd tools/lifter && $(PY) test_lift.py ../../$(EXEFS)/main 0x7000000000 20000 1
 
 clean:
 	rm -rf $(B)
