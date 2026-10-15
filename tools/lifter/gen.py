@@ -49,6 +49,7 @@ class Module:
         self.lifter = Lifter(base, simd)
         self.cache = {}
         self.stats = Counter()
+        self.setjmp_entries = self.find_setjmp_entries()
         self.mu = None
 
     def in_text(self, a):
@@ -67,6 +68,33 @@ class Module:
                 ins = Insn('trap', f'rt_udf(c, {hx(a)}); /* {e} */')
             self.cache[a] = ins
         return ins
+
+    SETJMP_NAMES = ('setjmp', '_setjmp', 'sigsetjmp', '__sigsetjmp')
+
+    def find_setjmp_entries(self):
+        """Ark: addresses whose call means setjmp: the module's own setjmp symbols, and its PLT stubs that resolve
+        to one (adrp x16 / ldr x17, [x16, #off] / add x16, x16, #off / br x17 through a JUMP_SLOT relocation)."""
+        n = self.nso
+        out = set()
+        for name, info, shndx, value, size in n.syms:
+            if shndx and name in self.SETJMP_NAMES:
+                out.add(self.base + value)
+        got = {}
+        for off, typ, sym, add in n.relocs:
+            if typ in (1025, 1026) and sym < len(n.syms):  # GLOB_DAT, JUMP_SLOT
+                got[off] = n.syms[sym][0]
+        words = self.words
+        for i in range(len(words) - 3):
+            w0, w1, w3 = words[i], words[i + 1], words[i + 3]
+            if (w0 & 0x9F00001F) == 0x90000010 and (w1 & 0xFFC003FF) == 0xF9400211 and w3 == 0xD61F0220:
+                pc = self.lo + 4 * i
+                imm = ((w0 >> 5) & 0x7FFFF) << 2 | ((w0 >> 29) & 3)
+                if imm & (1 << 20):
+                    imm -= 1 << 21
+                slot = (pc & ~0xFFF) + (imm << 12) + ((w1 >> 10) & 0xFFF) * 8 - self.base
+                if got.get(slot) in self.SETJMP_NAMES:
+                    out.add(pc)
+        return out
 
     def boundaries(self):
         n, b = self.nso, self.base
@@ -468,7 +496,13 @@ class Module:
                 out.append(f'    if ({ins.cond}) {{ {jump(ins.target)} }}')
             elif k == 'bl':
                 t = ins.target
-                if self.in_text(t):
+                if self.in_text(t) and t in self.setjmp_entries:
+                    # Ark: setjmp returns twice. A host checkpoint in this (still live) frame lets the runtime's
+                    # longjmp (runtime/hle/setjmp.c) come back here; the guest setjmp still fills the guest jmp_buf.
+                    refs.add(t)
+                    out.append(f'    c->x[30] = {hx(a + 4)}; {{ jmp_buf hb_; if (setjmp(hb_) == 0) {{ '
+                               f'rt_setjmp_register(c->x[0], &hb_); {fname(t)}(c); }} }}')
+                elif self.in_text(t):
                     refs.add(t)
                     out.append(f'    c->x[30] = {hx(a + 4)}; {fname(t)}(c);')
                 else:
@@ -615,6 +649,7 @@ def main():
         end = order[i + 1] if i + 1 < len(order) else m.hi
         labels, ext, tables = scanned[(a, end)]
         entries[a] = (end, labels, tables)
+    print(f'{args.name}: setjmp entries {sorted(hex(a) for a in m.setjmp_entries)}', file=sys.stderr)
     print(f'{args.name}: {len(starts)} boundaries, {len(entries)} functions, {rounds} rounds, {dict(m.stats)}, '
           f'{time.time() - t0:.0f}s', file=sys.stderr)
 
@@ -649,7 +684,9 @@ def main():
             if n > args.big_fn:
                 break
         path = os.path.join(args.outdir, f'{args.name}_{nchunks:03d}.c')
-        text = ['#include "cpu.h"\n' + ('#include "simd.h"\n' if m.lifter.sc else '')]
+        text = ['#include "cpu.h"\n' + ('#include "simd.h"\n' if m.lifter.sc else '')
+                + ('#include <setjmp.h>\nvoid rt_setjmp_register(uint64_t env, jmp_buf *hb);\n'
+                   if any('rt_setjmp_register(' in l for l in body) else '')]
         text += [f'void {fname(r)}(Cpu *c);\n' for r in sorted(refs)]
         text += [f'void {sanitize(hle[a])}(Cpu *c);\n' for a in sorted(set(hle) & set(fns))]
         text += ['\n'.join(body), '\n']

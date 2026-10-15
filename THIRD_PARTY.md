@@ -19,11 +19,11 @@ Files taken from it, with Ark's changes marked `Ark:` in the code:
 | `runtime/include/cpu.h` | `runtime/cpu.h` | `excl_val2`, `ldxp64`/`stxp64` |
 | `runtime/include/simd.h` | `runtime/simd.h` | none |
 | `runtime/include/simd_fp.h` | `runtime/simd_fp.h` | none |
-| `tools/lifter/gen.py` (again) | | resolved jump tables no longer get the all-instruction fallback (`rt_jt_miss`) |
+| `tools/lifter/gen.py` (again) | | resolved jump tables no longer get the all-instruction fallback (`rt_jt_miss`); setjmp call sites get a host checkpoint (`runtime/hle/setjmp.c`) |
 | `runtime/rt.h` | `runtime/rt.h` | module bases for four modules; 64 GB guest window; 48 GB alias region |
 | `runtime/loader.c` | `runtime/loader.c` | four modules (main, multimedia, glslc, sdk) |
 | `runtime/dispatch.c` | `runtime/dispatch.c` | four statically linked function tables (no game library loader yet); `rt_jt_miss` |
-| `runtime/kernel.c`, `kernel.h` | same | `svcGetInfo` 16/17 (system resource size); `svcMapPhysicalMemory` keeps mapped pages, `svcUnmapPhysicalMemory` discards; merged physical-mapping regions |
+| `runtime/kernel.c`, `kernel.h` | same | `svcGetInfo` 16/17 (system resource size); `svcMapPhysicalMemory` keeps mapped pages, `svcUnmapPhysicalMemory` discards; merged physical-mapping regions; `svcWaitProcessWideKeyAtomic` returns without the mutex on timeout (Horizon semantics) and keeps a wake that races a timeout; SIGUSR1 wait-state dump |
 | `runtime/ipc.c`, `ipc.h`, `hle.h`, `fnprof.c`, `platform.h` | same | `plat_discard` added to `platform.h` |
 | `runtime/platform/linux.c`, `linux_compat.h`, `windows.c`, `win_compat.h` | `runtime/platform/` | headless build (no SDL message box), log redirect only with `ARK_LOG_DIR`, `plat_discard` |
 | `runtime/services/*.c` | `runtime/services/` | none (LAS-only hooks satisfied by `runtime/stubs.c`, `rando.h`, `settings.h`) |
@@ -35,7 +35,8 @@ Files taken from it, with Ark's changes marked `Ark:` in the code:
 | `runtime/settings.h` / `settings.c` | same | Ark's own, keeping LAS's display / audio options and their meaning |
 
 Ark's own files in `runtime/`: `main.c` (based on LAS's), `stubs.c`, `rando.h`, `headless/SDL3/SDL.h`,
-`las_hooks_none.c`, `ui_none.c`, `ui/menu.h`, `paths.h`, `nvn/texpatch_none.c`, `hle/fslog.c`.
+`las_hooks_none.c`, `ui_none.c`, `ui/menu.h`, `paths.h`, `nvn/texpatch_none.c`, `hle/fslog.c`, `hle/setjmp.c`,
+`services/opus.c`, `services/offline.c`.
 
 ## SMAA (MIT)
 

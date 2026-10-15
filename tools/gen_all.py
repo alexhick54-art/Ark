@@ -40,7 +40,9 @@ def main():
             continue
         src = os.path.join(os.path.abspath(a.exefs), fname)
         t = time.time()
-        r = subprocess.run([sys.executable, 'gen.py', name, src, hex(base), os.path.join(out, name), '--simd', a.simd],
+        hle = os.path.join(HERE, 'hle_symbols.txt')
+        r = subprocess.run([sys.executable, 'gen.py', name, src, hex(base), os.path.join(out, name), '--simd', a.simd,
+                            '--hle', hle],
                            cwd=os.path.join(HERE, 'lifter'), stderr=subprocess.PIPE, text=True)
         summary = [l for l in r.stderr.splitlines() if 'progress' not in l]
         print('\n'.join(summary[-3:]))

@@ -348,8 +348,13 @@ static uint32_t block_current(int64_t timeout_ns) {
             break;
         }
         if (!kwait(timeout_ns, &ts)) {
-            t->wait_kind = WAIT_NONE;
-            t->wait_result = R_TIMEOUT;
+            // Ark: kwait re-takes g_klock before returning, and a waker may have run in between (signalled the condvar
+            // and handed us the mutex, or released a mutex to us). Then the wake stands: overwriting it with a
+            // timeout made the condvar path re-acquire a mutex it already owned and wait for itself forever.
+            if (t->wait_kind != WAIT_NONE) {
+                t->wait_kind = WAIT_NONE;
+                t->wait_result = R_TIMEOUT;
+            }
             break;
         }
     }
@@ -390,9 +395,18 @@ static uint32_t svc_wait_process_wide_key(uint64_t mutex, uint64_t key, uint32_t
     t->wait_tag = tag;
     __atomic_store_n(u32p(key), 1, __ATOMIC_SEQ_CST);
     uint32_t r = block_current(timeout);
+    // Ark: on a timeout Horizon returns WITHOUT the mutex and user code re-locks it itself (the SDK's
+    // InternalConditionVariable::TimedWait calls Enter; libnx's condvarWaitTimeout does the same). LAS re-acquired
+    // it here, so the SDK then locked a mutex it already held and waited for itself forever (Legends: Arceus hung
+    // at its first timed waits). Cancellation still re-acquires, as LAS did.
+    if (r == R_TIMEOUT) {
+        pthread_mutex_unlock(&g_klock);
+        return r;
+    }
     if (r != R_OK) {
-        // timed out / cancelled: still must reacquire the mutex
-        if (!mutex_acquire_or_mark(mutex, tag)) {
+        // cancelled: still must reacquire the mutex (unless it was already handed to us)
+        uint32_t owner = __atomic_load_n(u32p(mutex), __ATOMIC_SEQ_CST) & ~WAITERS_BIT;
+        if (owner != tag && !mutex_acquire_or_mark(mutex, tag)) {
             t->wait_kind = WAIT_MUTEX;
             t->wait_addr = mutex;
             block_current(-1);
@@ -874,7 +888,25 @@ void kernel_reset(void) {
     pthread_mutex_unlock(&g_klock);
 }
 
+// Ark: SIGUSR1 dumps every guest thread's wait state (diagnosing hangs: `kill -USR1 <pid>`). Debug only: it reads the
+// thread list without taking g_klock (a lock held by a stuck thread would make the dump hang too).
+#include <signal.h>
+static void dump_waits(int sig) {
+    (void)sig;
+    static const char *kind[] = {"running", "mutex", "condvar", "arbiter"};
+    fprintf(stderr, "[kernel] --- thread wait states ---\n");
+    for (KThread *t = g_threads; t; t = t->anext) {
+        uint32_t v = t->wait_addr ? __atomic_load_n((uint32_t *)(uintptr_t)t->wait_addr, __ATOMIC_RELAXED) : 0;
+        fprintf(stderr, "[kernel] thread %x prio %d %s addr %llx value %08x mutex %llx tag %x lr %llx\n", t->handle, t->prio,
+                t->wait_kind <= WAIT_ARBITER ? kind[t->wait_kind] : "?", (unsigned long long)t->wait_addr, v,
+                (unsigned long long)t->wait_mutex, t->wait_tag, (unsigned long long)t->cpu.x[30]);
+    }
+}
+
 void kernel_init(void) {
+#ifndef _WIN32
+    signal(SIGUSR1, dump_waits);
+#endif
     // Reserve the heap, alias, stack, and TLS regions.
     region_add(TLS_BASE, TLS_SIZE, 0xC, 3);
     for (int i = 0; i < g_nmodules; i++) {

@@ -1,0 +1,4 @@
+# SDK functions whose generated body is replaced by a call to a host function hle_<name> (tools/lifter/gen.py --hle).
+# Ark: longjmp lands on host checkpoints made at setjmp call sites (runtime/hle/setjmp.c).
+longjmp
+_longjmp
