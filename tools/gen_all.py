@@ -20,6 +20,32 @@ from layout import MODULES, BUILD_ID  # noqa: E402
 from nso import Nso  # noqa: E402
 
 
+def find_exefs(path):
+    """The folder holding main / sdk / subsdk0 / subsdk1. Accepts the folder itself, a parent with one exefs folder
+    inside (e.g. game/ or game/exefs/exefs/), and files with a .nso extension; otherwise says what it found."""
+    if not os.path.isdir(path):
+        sys.exit(f'exefs folder not found: {os.path.abspath(path)}\n'
+                 f'Put the exefs files (main, sdk, subsdk0, subsdk1, main.npdm) there, or pass EXEFS=<folder>.')
+    for root, dirs, files in os.walk(path):
+        if root[len(path):].count(os.sep) > 2:
+            continue
+        names = {f.lower(): f for f in files}
+        if 'main' in names or 'main.nso' in names:
+            if 'main' not in names:  # .nso extensions: link-free fix, copy under the expected names
+                for m in ('main', 'sdk', 'subsdk0', 'subsdk1'):
+                    src = os.path.join(root, names.get(m + '.nso', m + '.nso'))
+                    dst = os.path.join(root, m)
+                    if os.path.exists(src) and not os.path.exists(dst):
+                        import shutil
+                        shutil.copyfile(src, dst)
+            if os.path.abspath(root) != os.path.abspath(path):
+                print(f'using exefs files in {root}')
+            return root
+    listing = ', '.join(sorted(os.listdir(path))[:20]) or '(empty)'
+    sys.exit(f'no "main" file in {os.path.abspath(path)} (or a folder below it). It contains: {listing}\n'
+             f'Expected the exefs files as hactool --exefsdir writes them: main, sdk, subsdk0, subsdk1, main.npdm.')
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('exefs')
@@ -30,6 +56,7 @@ def main():
     a = ap.parse_args()
     only = set(filter(None, a.only.split(',')))
 
+    a.exefs = find_exefs(a.exefs)
     main_nso = Nso(os.path.join(a.exefs, 'main'))
     if not BUILD_ID.startswith(main_nso.build_id[:32]):
         sys.exit(f'main build id {main_nso.build_id} is not v1.1.1 ({BUILD_ID}); Ark targets v1.1.1 only')

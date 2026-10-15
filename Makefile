@@ -68,7 +68,13 @@ RTFLAGS  := -O1 -g -std=gnu11 $(MFLAGS) $(OSFLAGS) -fno-strict-aliasing -Iruntim
             -Wall -Wno-unused-function -Wno-format
 RT_HDRS  := $(wildcard runtime/*.h runtime/nvn/*.h runtime/nvn/*/*.h) runtime/include/cpu.h
 
-.PHONY: gen objs ark mkromfs test-lift clean
+.PHONY: help gen objs ark mkromfs test-lift clean
+help:
+	@echo "Ark build targets (see docs/BUILD-windows.md or README.md):"
+	@echo "  make gen EXEFS=game/exefs   translate the game's code to C (folder with main, sdk, subsdk0, subsdk1)"
+	@echo "  make -j\$$(nproc) objs        compile the translated code (the long step)"
+	@echo "  make -j\$$(nproc) ark mkromfs  build the executable and the RomFS tool"
+
 gen:
 	$(PY) tools/gen_all.py $(EXEFS) $(GEN) --simd $(SIMD)
 
