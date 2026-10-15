@@ -4,12 +4,13 @@ Read this first when resuming work. It records what is done, how it was measured
 
 Target: Pokémon Legends: Arceus v1.1.1, main build ID `AEE8F150DDA1B5A838806E1A5EA6827AD9F3C51E`.
 
-## Where it stands (2026-10-15, evening)
+## Where it stands (2026-10-16)
 
-**The recompiled game reaches the opening scene.** On Linux, through Ark's NVN-on-Vulkan layer (tested on lavapipe), it
-boots, shows the Game Freak logo and the first-boot language menu. After English is picked, it plays the opening:
-Arceus's realm with its particle effects, and the dialogue box with text ("Welcome to my realm, located beyond both
-time and space."). Scripted A presses (`LARECOMP_INPUT`) drive it.
+**The recompiled game plays its whole opening.** On Linux, through Ark's NVN-on-Vulkan layer (tested on lavapipe):
+logo, first-boot language menu, Arceus's realm with dialogue text, appearance selection, name entry (the swkbd HLE
+answers "Ark"), the cutscene, and the "Pokémon Legends: Arceus" title logo (~frame 3,900). It then loads the field and
+stops on the first field file missing from the test RomFS (`bin/effect/field/...`). Scripted A presses
+(`LARECOMP_INPUT`) drive it. The Windows build compiles and links on the user's PC; its first run is being debugged.
 
 | Milestone | State |
 |---|---|
@@ -107,6 +108,10 @@ result. That is the start of milestone 3.
     Memory cost: imports pin their pages, including the unmapped gaps inside arena 0 (~1 GB).
 - **CPU-written textures:** `nvnMemoryPoolFlushMappedRange` / `nvnBufferFlushMappedRange` ranges now mark
   overlapping textures for a full re-hash at their next use (`textures.c backend_pool_written`).
+- **Translator fixes found on the way** (`tools/lifter/gen.py`): jump-table bases resolved along control-flow
+  predecessors (an `adrp` on another path had overwritten one); masked tables found up to 48 instructions back and
+  with `ubfx` indexes; an `adr` feeding a `br` on the same register within 48 instructions is a table base, not a
+  function start (main: 1,817 tables, 29 all-label fallbacks).
 - **Kernel fixes found on the way:**
   - A timed condition-variable wait that times out returns without re-acquiring the mutex (Horizon semantics; the
     SDK re-locks). LAS re-acquired it, which deadlocked.
@@ -136,8 +141,8 @@ generated GLSL in `build/glsl/`, `ARK_RUN_SECONDS=N` exits after N seconds, and 
 
 ### Next
 
-1. **RomFS:** the test image has boot, sound (minus `Default.pck`), core, UI, resident, title and story folders
-   (~1.8 GB of 6.4). `romfs_field` (`bin\archive\field bin\field\model bin\effect\field`) and `romfs_pokemon`
+1. **RomFS:** the test image has boot, sound (minus `Default.pck`), core, UI, resident, title, story and Pokémon
+   folders (~2.4 GB of 6.4); `tools/pack_romfs.ps1` packs folders into upload-sized zips. `romfs_field` (`bin\archive\field bin\field\model bin\effect\field`) and `romfs_pokemon`
    (`bin\archive\pokemon bin\appli\res_pokemon`) are requested; battle effects and `Default.pck` after that.
 2. **Storage images:** bind `st.img` as Vulkan storage images and translate `SUST`/`SULD`/`SURED`/`SUATOM`.
 3. **Windows build** on the user's PC (RX 9070 XT): the first run needs real-GPU feedback.
