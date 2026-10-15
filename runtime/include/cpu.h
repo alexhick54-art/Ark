@@ -36,6 +36,8 @@ void rt_dispatch(Cpu *c);                 // call function at c->pc
 void rt_svc(Cpu *c, uint32_t imm, uint64_t pc);
 void rt_brk(Cpu *c, uint32_t imm, uint64_t pc) __attribute__((noreturn));
 void rt_udf(Cpu *c, uint64_t pc) __attribute__((noreturn));
+// Ark: a resolved jump table at br_pc got a target outside its verified cases.
+void rt_jt_miss(Cpu *c, uint64_t br_pc, uint64_t target) __attribute__((noreturn));
 uint64_t rt_ticks(void);
 
 #if defined(__aarch64__)

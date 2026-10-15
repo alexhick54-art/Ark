@@ -4,8 +4,8 @@ A static recompilation of **Pokémon Legends: Arceus** (Nintendo Switch, v1.1.1)
 style of [LAS Recomp](https://github.com/peiikai/LASRecomp) and
 [ssbu-recomp](https://github.com/Denkishi/ssbu-recomp).
 
-The game's AArch64 machine code is translated to C ahead of time and compiled for the PC. The plan is for the
-Switch's system libraries and its graphics API (NVN) to be re-implemented natively, with NVN running on Vulkan.
+The game's AArch64 machine code is translated to C ahead of time and compiled for the PC. The Switch's system
+services are re-implemented natively, and the plan is for its graphics API (NVN) to run on Vulkan.
 This is not an emulator: there is no CPU interpreter or JIT.
 
 > **This repository contains no game code, no game assets, no keys and no firmware.**
@@ -15,17 +15,17 @@ This is not an emulator: there is no CPU interpreter or JIT.
 
 ## Status
 
-**Milestone 1 (translation) is done. Nothing runs yet.** See [docs/STATUS.md](docs/STATUS.md) for numbers and
-what comes next.
+**The recompiled game boots, headless, up to its first graphics call.** Nothing is drawn yet. See
+[docs/STATUS.md](docs/STATUS.md) for the measurements and what comes next.
 
 | Step | State |
 |---|---|
 | Translate all four code modules (`main`, `sdk`, `multimedia`, `glslc`) to C | done: ~227,000 functions, 0 untranslatable instructions |
 | Translator checked against Unicorn on the game's own instructions | 42,000 encodings / ~126,000 random cases, 0 mismatches |
-| Generated C compiles (Linux x86-64; Windows cross-compile spot-checked) | see docs/STATUS.md |
-| Runtime: loader, kernel, system services | next (milestone 2) |
-| NVN on Vulkan, shader translation | later (milestone 3) |
-| Boots to title, plays | not yet |
+| Generated C compiles | Linux x86-64: all 1,796 files, 0 errors. Windows: spot-checked |
+| Runtime: loader, kernel, system services (from LAS Recomp) | boots through SDK start-up, 1,895 game constructors and `nnMain` to the first NVN call |
+| NVN on Vulkan, shader translation | next (milestone 3) |
+| Window, audio out, input, plays | not yet |
 
 ## Layout
 
@@ -35,26 +35,33 @@ tools/
   layout.py         where each module lives in guest memory
   setup_unicorn.sh  builds Unicorn from source if `pip install unicorn` is not an option
   lifter/           AArch64 -> C translator (from LAS Recomp, MIT; changes listed in THIRD_PARTY.md)
-runtime/
+  mkromfs/          RomFS image from a romfs folder
+runtime/            loader, dispatcher, kernel (SVCs), IPC and services, host replacements for SDK functions
   include/          CPU state and helpers the generated C uses
+  platform/         host OS layer (Linux, Windows)
 docs/
   STATUS.md         progress, measurements, next steps (start here when resuming work)
   INVENTORY.md      what the game's modules contain and which system pieces it needs
 ```
 
-## Translating (milestone 1)
+## Building (Linux, headless for now)
 
 Requirements: Python 3.10+, clang, and Unicorn's Python bindings (`pip install unicorn`, or
 `source tools/setup_unicorn.sh`).
 
-1. Extract the exefs of the v1.1.1 update with hactool (`--exefsdir=exefs`), so `exefs/` holds `main`, `sdk`,
-   `subsdk0`, `subsdk1`.
+1. Extract the v1.1.1 update's exefs with hactool (`--exefsdir=exefs`), so `exefs/` holds `main`, `sdk`, `subsdk0`,
+   `subsdk1` and `main.npdm`. Extract its RomFS as an image (`--romfs=romfs.bin`), or build one from a folder with
+   `make mkromfs && build/mkromfs romfs/ romfs.bin`.
 2. `make gen EXEFS=exefs` writes the C to `generated/` (about 1.1 GB, a few minutes).
-3. `make -j objs` compiles it into `build/obj/`.
-4. `make test-lift EXEFS=exefs` (optional) compares the translator with Unicorn on 20,000 of the game's
+3. `make -j objs` compiles it (about 40 minutes on 2 cores, much less on a desktop).
+4. `make -j ark` links `build/ark`.
+5. Put `exefs/` and `romfs.bin` in one folder and run `build/ark <that folder>`. The log shows the boot up to the
+   first unimplemented graphics call.
+6. `make test-lift EXEFS=exefs` (optional) compares the translator with Unicorn on 20,000 of the game's
    instruction encodings.
 
 ## Credits
 
-The translator and CPU helpers come from **LAS Recomp** by Peiikai (MIT); see [THIRD_PARTY.md](THIRD_PARTY.md).
+The translator, CPU helpers and the runtime's core come from **LAS Recomp** by Peiikai (MIT); see
+[THIRD_PARTY.md](THIRD_PARTY.md).
 Ark is a fan project and is not affiliated with Nintendo, The Pokémon Company or Game Freak.

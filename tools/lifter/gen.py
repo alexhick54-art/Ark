@@ -409,9 +409,11 @@ class Module:
             refs.add(t)
             return f'__attribute__((musttail)) return {fname(t)}(c);'
 
-        # Functions with jump tables also get the all-instruction fallback: a table whose emulation
-        # missed some cases then still reaches the right instruction instead of aborting.
-        all_labels = bool(tables)
+        # LAS gave every function with a jump table the all-instruction fallback. Ark: only functions with an
+        # unresolved table get it (ARK_TABLE_FALLBACK=1 restores LAS's behaviour). A resolved table's cases were
+        # all verified by emulation; a miss at run time stops with rt_jt_miss instead. The fallback (a label at
+        # every instruction plus a switch over all of them) made clang take minutes per function.
+        all_labels = any(v == 'all' for v in tables.values()) or (bool(tables) and TABLE_FALLBACK)
         if all_labels:
             labels = set(range(entry, end, 4))
         rando_here = [a for a in range(entry, end, 4) if a - self.base in RANDO_CODE]
@@ -481,7 +483,10 @@ class Module:
                 if jt:
                     cases = ' '.join(f'case {hx(t)}: goto L_{t:x};' for t in jt)
                     out.append(f'    switch ({ins.target}) {{ {cases} default: break; }}')
-                    out.append(f'    c->pc = {ins.target}; goto L_dispatch;')
+                    if all_labels:
+                        out.append(f'    c->pc = {ins.target}; goto L_dispatch;')
+                    else:
+                        out.append(f'    rt_jt_miss(c, {hx(a)}, {ins.target});')
                     continue
                 out.append(f'    c->pc = {ins.target}; __attribute__((musttail)) return rt_dispatch(c);')
             elif k == 'ret':
@@ -501,6 +506,8 @@ class Module:
 
 
 from patches import PATCHES
+
+TABLE_FALLBACK = os.environ.get('ARK_TABLE_FALLBACK', '0') not in ('', '0')
 
 import json as _json
 import os as _os

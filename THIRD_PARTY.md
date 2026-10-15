@@ -19,6 +19,18 @@ Files taken from it, with Ark's changes marked `Ark:` in the code:
 | `runtime/include/cpu.h` | `runtime/cpu.h` | `excl_val2`, `ldxp64`/`stxp64` |
 | `runtime/include/simd.h` | `runtime/simd.h` | none |
 | `runtime/include/simd_fp.h` | `runtime/simd_fp.h` | none |
+| `tools/lifter/gen.py` (again) | | resolved jump tables no longer get the all-instruction fallback (`rt_jt_miss`) |
+| `runtime/rt.h` | `runtime/rt.h` | module bases for four modules; 64 GB guest window; 48 GB alias region |
+| `runtime/loader.c` | `runtime/loader.c` | four modules (main, multimedia, glslc, sdk) |
+| `runtime/dispatch.c` | `runtime/dispatch.c` | four statically linked function tables (no game library loader yet); `rt_jt_miss` |
+| `runtime/kernel.c`, `kernel.h` | same | `svcGetInfo` 16/17 (system resource size); `svcMapPhysicalMemory` keeps mapped pages, `svcUnmapPhysicalMemory` discards; merged physical-mapping regions |
+| `runtime/ipc.c`, `ipc.h`, `hle.h`, `fnprof.c`, `platform.h` | same | `plat_discard` added to `platform.h` |
+| `runtime/platform/linux.c`, `linux_compat.h`, `windows.c`, `win_compat.h` | `runtime/platform/` | headless build (no SDL message box), log redirect only with `ARK_LOG_DIR`, `plat_discard` |
+| `runtime/services/*.c` | `runtime/services/` | none (LAS-only hooks satisfied by `runtime/stubs.c`, `rando.h`, `settings.h`) |
+| `runtime/hle/heaps.c`, `vi.c`, `pl.c`, `nvn_boot.c`, `swkbd.c` | `runtime/hle/` | none |
+| `runtime/romfs_build.c`, `romfs_build.h` | same | none |
+
+Ark's own files in `runtime/`: `main.c` (based on LAS's), `stubs.c`, `rando.h`, `settings.h`, `headless/SDL3/SDL.h`.
 
 LAS Recomp's license:
 
