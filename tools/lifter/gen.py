@@ -195,6 +195,83 @@ class Module:
         for r in regs:
             mu.reg_write(A.UC_ARM64_REG_X0 + r if r < 29 else A.UC_ARM64_REG_X29, i)
 
+    # Ark: registers live into a table's window whose value is a constant (the table base from adrp/add) are
+    # resolved along the control-flow predecessors instead of by replaying every adr/adrp/add from the function
+    # entry in address order: a later, unrelated `adrp xN` on another path overwrote the table base that way.
+    def _preds(self, entry, end):
+        key = (entry, end)
+        if getattr(self, '_preds_key', None) != key:
+            preds = {}
+            for q in range(entry, end, 4):
+                w = self.word(q)
+                t = None
+                if (w & 0xFC000000) == 0x14000000:                      # B
+                    t = q + sext(bits(w, 0, 26), 26) * 4
+                elif (w & 0xFF000010) == 0x54000000:                    # B.cond
+                    t = q + sext(bits(w, 5, 19), 19) * 4
+                elif (w & 0x7E000000) == 0x34000000:                    # CBZ / CBNZ
+                    t = q + sext(bits(w, 5, 19), 19) * 4
+                elif (w & 0x7E000000) == 0x36000000:                    # TBZ / TBNZ
+                    t = q + sext(bits(w, 5, 14), 14) * 4
+                if t is not None and entry <= t < end:
+                    preds.setdefault(t, []).append(q)
+                ends = (w & 0xFC000000) == 0x14000000 or (w & 0xFFFFFC1F) in (0xD61F0000, 0xD65F0000)
+                if not ends and q + 4 < end:
+                    preds.setdefault(q + 4, []).append(q)
+            self._preds_key, self._preds_map = key, preds
+        return self._preds_map
+
+    @staticmethod
+    def _may_write(w, r):
+        """Whether the instruction may write general register r (conservative)."""
+        if (w & 0xFC000000) == 0x94000000 or (w & 0xFFFFFC1F) == 0xD63F0000:  # BL / BLR: caller-saved
+            return r <= 18 or r == 30
+        if (w & 0x0A000000) == 0x08000000:  # loads / stores: Rt, Rt2, and Rn (writeback)
+            return r in (w & 31, bits(w, 5, 5), bits(w, 10, 5))
+        return (w & 31) == r
+
+    def _const_value(self, reg, at, entry, end, depth=0):
+        """Value of reg just before the instruction at `at` if every path defines it with the same
+        adr / adrp / add-immediate / movz chain, else None."""
+        if depth > 4 or reg >= 31:
+            return None
+        preds = self._preds(entry, end)
+        results, seen, todo, steps = set(), {at}, [at], 0
+        while todo:
+            p = todo.pop()
+            ps = preds.get(p)
+            if not ps:
+                if p == entry:
+                    return None  # (an argument or a callee-saved value: not a constant)
+                continue          # (only reached through an indirect branch: no other definition on the way)
+            for q in ps:
+                steps += 1
+                if steps > 512:
+                    return None
+                w = self.word(q)
+                if (w & 31) == reg and (w & 0x9F000000) == 0x90000000:    # ADRP
+                    imm = (bits(w, 5, 19) << 2) | bits(w, 29, 2)
+                    results.add(((q & ~0xFFF) + sext(imm, 21) * 4096) & 0xFFFFFFFFFFFFFFFF)
+                elif (w & 31) == reg and (w & 0x9F000000) == 0x10000000:  # ADR
+                    imm = (bits(w, 5, 19) << 2) | bits(w, 29, 2)
+                    results.add((q + sext(imm, 21)) & 0xFFFFFFFFFFFFFFFF)
+                elif (w & 31) == reg and (w & 0xFF800000) == 0x91000000:  # ADD (imm), 64-bit
+                    v = self._const_value(bits(w, 5, 5), q, entry, end, depth + 1)
+                    if v is None:
+                        return None
+                    results.add((v + (bits(w, 10, 12) << (12 if bits(w, 22, 1) else 0))) & 0xFFFFFFFFFFFFFFFF)
+                elif (w & 31) == reg and (w & 0x7F800000) == 0x52800000:  # MOVZ
+                    v = bits(w, 5, 16) << (bits(w, 21, 2) * 16)
+                    results.add(v if bits(w, 31, 1) else v & 0xFFFFFFFF)
+                elif self._may_write(w, reg):
+                    return None
+                elif q not in seen:
+                    seen.add(q)
+                    todo.append(q)
+                if len(results) > 1:
+                    return None
+        return results.pop() if len(results) == 1 else None
+
     def _emulate_table(self, br_pc, entry, end, start, idx, count, set_at):
         """Run start..br for each index value (set at address set_at), collect targets."""
         mu = self.emu()
@@ -209,6 +286,11 @@ class Module:
                 pc = mu.reg_read(A.UC_ARM64_REG_PC)
             return False
 
+        live_consts = {}
+        for r in range(29):
+            v = self._const_value(r, start, entry, end)
+            if v is not None:
+                live_consts[r] = v
         targets = []
         try:
             for i in range(count):
@@ -221,6 +303,8 @@ class Module:
                     if (w2 & 0x1F000000) == 0x10000000 or (w2 & 0xFF800000) == 0x91000000:
                         mu.emu_start(a2, 0, count=1)
                     a2 += 4
+                for r, v in live_consts.items():
+                    mu.reg_write(A.UC_ARM64_REG_X0 + r, v)
                 if set_at != start and not step_to(start, set_at):
                     return None
                 self._set_index(mu, [idx], i)
@@ -300,6 +384,7 @@ class Module:
         idx_regs = self._index_regs(start, cmp, idx)
         mu = self.emu()
         targets = []
+        live_consts = {r: v for r in range(29) for v in [self._const_value(r, start, entry, end)] if v is not None}
 
         def step_to(frm, to):
             # single-step: Unicorn's `until` is unreliable mid translation-block
@@ -324,6 +409,8 @@ class Module:
                     if (w2 & 0x1F000000) == 0x10000000 or (w2 & 0xFF800000) == 0x91000000:
                         mu.emu_start(a2, 0, count=1)
                     a2 += 4
+                for r, v in live_consts.items():
+                    mu.reg_write(A.UC_ARM64_REG_X0 + r, v)
                 if not step_to(start, cmp):
                     return None
                 self._set_index(mu, idx_regs, i)
