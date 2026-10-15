@@ -701,13 +701,14 @@ def main():
             imm = ((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3)
             if imm & (1 << 20):
                 imm -= 1 << 21
-            # Ark: an ADR that feeds a `br` a few instructions later is a jump-table base (the first case),
-            # not a callback; making it a function start would split the switch from its own cases.
+            # Ark: an ADR that feeds a `br` on the same register within the block is a jump-table base (the
+            # first case), not a callback; making it a function start would split the switch from its own cases.
+            # (up to 48 instructions on: lookups get interleaved with unrelated float math)
             feeds_br = False
-            for k in range(i + 1, min(i + 12, len(m.words))):
+            for k in range(i + 1, min(i + 48, len(m.words))):
                 wk = m.words[k]
                 if (wk & 0xFFFFFC1F) == 0xD61F0000:  # br
-                    feeds_br = True
+                    feeds_br = ((wk >> 5) & 31) == (w & 31)
                     break
                 if (wk & 0xFC000000) in (0x14000000, 0x94000000) or wk == 0xD65F03C0:  # b, bl, ret
                     break
