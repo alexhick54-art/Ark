@@ -146,21 +146,29 @@ class Module:
 
     def _jump_table_masked(self, br_pc, entry, end):
         """Ark: tables indexed by a masked value with no bounds check, e.g.
-        `and x12, x2, #0xf ; adr x13, .. ; ldrb w14, [x10, x12] ; add x13, x13, x14, lsl #2 ; br x13`."""
+        `and x12, x2, #0xf ; adr x13, .. ; ldrb w14, [x10, x12] ; add x13, x13, x14, lsl #2 ; br x13`, or with the
+        index extracted by `ubfx w9, w23, #1, #2`. The nearest such instruction whose result is read on the way to the
+        br is the index (up to 48 instructions back: the compiler interleaves the lookup with unrelated float math)."""
         a = br_pc - 4
-        while a >= entry and br_pc - a <= 4 * 16:
+        while a >= entry and br_pc - a <= 4 * 48:
             w = self.word(a)
             if self.lift(a).kind not in ('op', 'asm'):
                 return None
-            # AND (immediate), 32- or 64-bit, with a low-bits mask 2^k - 1 (k <= 12)
-            if (w & 0x7F800000) == 0x12000000:
+            width = None
+            if (w & 0x7F800000) == 0x12000000:  # AND (imm) with a low-bits mask 2^k - 1
                 sf, N, immr, imms = bits(w, 31, 1), bits(w, 22, 1), bits(w, 16, 6), bits(w, 10, 6)
                 if immr == 0 and (N == 1 or sf == 0) and imms < 12:
-                    count = 1 << (imms + 1)
-                    start = a
-                    while start - 4 >= entry and a - (start - 4) <= 4 * 12 and self.lift(start - 4).kind in ('op', 'asm'):
-                        start -= 4
-                    return self._emulate_table(br_pc, entry, end, start, w & 31, count, a + 4)
+                    width = imms + 1
+            elif (w & 0x7F800000) == 0x53000000 and bits(w, 31, 1) == bits(w, 22, 1):  # UBFM: ubfx (lsb, width)
+                immr, imms = bits(w, 16, 6), bits(w, 10, 6)
+                if immr <= imms and imms - immr < 12 and imms != (63 if bits(w, 31, 1) else 31):
+                    width = imms - immr + 1
+            if width is not None and any((w & 31) in (bits(self.word(u), 5, 5), bits(self.word(u), 16, 5))
+                                         for u in range(a + 4, br_pc, 4)):
+                start = a
+                while start - 4 >= entry and a - (start - 4) <= 4 * 12 and self.lift(start - 4).kind in ('op', 'asm'):
+                    start -= 4
+                return self._emulate_table(br_pc, entry, end, start, w & 31, 1 << width, a + 4)
             a -= 4
         return None
 
