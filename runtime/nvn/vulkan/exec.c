@@ -981,6 +981,9 @@ static void translate_program(void *arg) {
         atomic_store(&p->state, 2);
         return;
     }
+    if (p->vi->drops_image_writes || p->fi->drops_image_writes)
+        LOG("[shader] program %llx/%llx: image stores dropped (storage images not bound yet)\n",
+            (unsigned long long)p->code[0], (unsigned long long)p->code[1]);
     p->vs_uses_vid = strstr(p->vi->msl, "gl_VertexIndex") != NULL;
     save_glsl(p->vi->msl, p->code[0], "vs");
     save_glsl(p->fi->msl, p->code[1], "fs");
@@ -1719,6 +1722,8 @@ static CsProg *compute_program(NvnProgram *np) {
         atomic_store(&cp->p.state, 2);
         return cp;
     }
+    if (cp->si->drops_image_writes)
+        LOG("[compute] %llx: image stores dropped (storage images not bound yet)\n", (unsigned long long)ss->code_addr);
     for (int i = 0; i < 3; i++) {
         cp->local[i] = ss->control ? *(const uint32_t *)(ss->control + 0x748 + 4 * i) : 1;
         if (!cp->local[i]) cp->local[i] = 1;

@@ -15,17 +15,18 @@ This is not an emulator: there is no CPU interpreter or JIT.
 
 ## Status
 
-**The recompiled game boots, headless, up to its first graphics call.** Nothing is drawn yet. See
-[docs/STATUS.md](docs/STATUS.md) for the measurements and what comes next.
+**The recompiled game draws its first frames**: the boot logo renders through Ark's NVN-on-Vulkan layer. It stops at
+the title screen for now (the test RomFS is partial). See [docs/STATUS.md](docs/STATUS.md) for the measurements and
+what comes next.
 
 | Step | State |
 |---|---|
 | Translate all four code modules (`main`, `sdk`, `multimedia`, `glslc`) to C | done: ~227,000 functions, 0 untranslatable instructions |
 | Translator checked against Unicorn on the game's own instructions | 42,000 encodings / ~126,000 random cases, 0 mismatches |
 | Generated C compiles | Linux x86-64: all 1,796 files, 0 errors. Windows: spot-checked |
-| Runtime: loader, kernel, system services (from LAS Recomp) | boots through SDK start-up, 1,895 game constructors and `nnMain` to the first NVN call |
-| NVN on Vulkan, shader translation | next (milestone 3) |
-| Window, audio out, input, plays | not yet |
+| Runtime: loader, kernel, system services (from LAS Recomp) | boots through SDK start-up, 1,895 game constructors and `nnMain` |
+| NVN on Vulkan, shader translation | first frames: the boot logo renders; title screen next |
+| Window, audio out, input, plays | window and audio code in the tree; not played yet |
 
 ## Layout
 
@@ -44,19 +45,21 @@ docs/
   INVENTORY.md      what the game's modules contain and which system pieces it needs
 ```
 
-## Building (Linux, headless for now)
+## Building (Linux)
 
-Requirements: Python 3.10+, clang, and Unicorn's Python bindings (`pip install unicorn`, or
-`source tools/setup_unicorn.sh`).
+Windows: see [docs/BUILD-windows.md](docs/BUILD-windows.md).
+
+Requirements: Python 3.10+, clang, Unicorn's Python bindings (`pip install unicorn`, or
+`source tools/setup_unicorn.sh`), and SDL3, the Vulkan loader, shaderc, VMA and libopus (system packages, or
+`tools/deps/build_linux_deps.sh` builds them into a prefix; pass it as `DEPS=<prefix>`).
 
 1. Extract the v1.1.1 update's exefs with hactool (`--exefsdir=exefs`), so `exefs/` holds `main`, `sdk`, `subsdk0`,
    `subsdk1` and `main.npdm`. Extract its RomFS as an image (`--romfs=romfs.bin`), or build one from a folder with
    `make mkromfs && build/mkromfs romfs/ romfs.bin`.
 2. `make gen EXEFS=exefs` writes the C to `generated/` (about 1.1 GB, a few minutes).
 3. `make -j objs` compiles it (about 40 minutes on 2 cores, much less on a desktop).
-4. `make -j ark` links `build/ark`.
-5. Put `exefs/` and `romfs.bin` in one folder and run `build/ark <that folder>`. The log shows the boot up to the
-   first unimplemented graphics call.
+4. `make -j ark` links `build/ark` (`HEADLESS=1`: no window or renderer).
+5. Put `exefs/` and `romfs.bin` in one folder and run `build/ark <that folder>`.
 6. `make test-lift EXEFS=exefs` (optional) compares the translator with Unicorn on 20,000 of the game's
    instruction encodings.
 

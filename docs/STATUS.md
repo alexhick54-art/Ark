@@ -6,16 +6,17 @@ Target: Pokémon Legends: Arceus v1.1.1, main build ID `AEE8F150DDA1B5A838806E1A
 
 ## Where it stands (2026-10-15)
 
-**The recompiled game boots headless on Linux up to its first graphics call.** It loads the four modules, runs the
-SDK's start-up and the game's 1,895 constructors, enters `nnMain`, starts 9 threads, talks to 12 system services,
-opens its RomFS, and stops when it creates its NVN graphics device (`nvnDeviceInitialize`), because NVN has no host
-implementation yet. No other system function was missing on the way.
+**The recompiled game draws its first frames.** On Linux, through Ark's NVN-on-Vulkan layer, it boots, renders the
+"Presented by Game Freak" logo correctly at 1920x1080, and runs for about 135 frames. Then it opens the title
+screen's particle file (`bin/effect/field/particle/uiux/game_start/ef_uiux_game_start00.ptcl`), which isn't in the
+partial RomFS used for testing, and crashes in `nn::util::BinaryFileHeader::IsSignatureValid` on the null buffer.
+The fix is more RomFS, not code (the title sequence's file list is under "Next").
 
 | Milestone | State |
 |---|---|
 | 1. Translate all code to C, compile it | **done** |
 | 2. Headless boot to the first GPU call | **done** (Linux x86-64) |
-| 3. NVN on Vulkan + shader translation: first frame | next |
+| 3. NVN on Vulkan + shader translation: first frame | **first frame done**; title screen next |
 | 4. Audio out, input, saves, the field | later |
 
 ## Milestone 1: translation
@@ -81,21 +82,52 @@ SetLevels, SetFormat, SetDepthStencilMode, SetStride, SetSwizzle, SetTarget, Set
 GetStorageSize). It crashes right after, because the stubbed `GetStorageSize` returned 0 and the game used the
 result. That is the start of milestone 3.
 
-## Next: milestone 3, NVN on Vulkan
+## Milestone 3: NVN on Vulkan (in progress)
 
-1. **Decide the NVN layer.** `runtime/hle/nvn_boot.c` already routes every NVN function the game asks for
-   (`nvnBootstrapLoader` / `nvnDeviceGetProcAddress`) to a named host function; unimplemented ones log and return 0.
-   LAS has an NVN implementation (`runtime/nvn/`: objects, command buffers, Maxwell shader translation, Vulkan
-   backend, ~7,000 lines plus `nvn/vulkan/` and `nvn/maxwell/`). ssbu-recomp has another (GPLv3; not copied). Start
-   from LAS's: it's the same API.
-2. **Device, memory pools, textures, buffers:** builders and `Get*` queries need real answers (storage sizes and
-   alignment of block-linear textures) before anything is drawn.
-3. **Window and present:** SDL3 window and Vulkan swapchain (LAS's Windows/Linux path), so the headless flag goes.
-4. **Shaders:** the game's shaders are Maxwell machine code in `.bnsh`. LAS's `nvn/maxwell/translate.c` translates
-   the subset LAS needed; PLA's shaders (compute, tessellation for grass?) need more. The game also links NVIDIA's
-   GLSL compiler (`glslc`) and imports `glslcCompile*`: check which shaders it compiles at run time.
-5. **Windows build:** `platform/windows.c` (from LAS) is in the tree but untested in Ark; the user's PC is the test
-   machine.
+- **NVN layer:** LAS Recomp's `runtime/nvn/` (objects, command buffers, Maxwell shader translation, Vulkan backend).
+  The game asks for 524 NVN functions; 495 have implementations, and the rest log once and return 0.
+  `vulkan/device.c` enables only the device features that are present (`ARK_FEAT`).
+- **Shaders:** Maxwell → GLSL (`maxwell/translate.c`) → SPIR-V (shaderc). Ark added:
+  - `RED` (global reductions: 32-bit add/min/max/inc/dec/and/or/xor, 64-bit add/and/or/xor, f32 add) on the
+    guest-heap storage buffer.
+  - `SUST`/`SURED` are accepted, but **their writes are dropped**: storage images aren't bound to Vulkan yet
+    (`CMD_BIND_IMAGES` is recorded but not used). The two logo-time programs that hit this clear an image, then
+    accumulate into it, and are logged as "image stores dropped". `SULD` isn't implemented.
+- **Kernel fixes found on the way:**
+  - A timed condition-variable wait that times out returns without re-acquiring the mutex (Horizon semantics; the
+    SDK re-locks). LAS re-acquired it, which deadlocked.
+  - A wake that races the timeout is kept.
+- **setjmp/longjmp** (the game's Lua): each guest `setjmp` call site gets a host `setjmp` checkpoint keyed by the
+  guest `jmp_buf`, and the guest `longjmp` is replaced (`runtime/hle/setjmp.c`, `gen.py: find_setjmp_entries`).
+- **Services added:**
+  - `hwopus` on libopus
+  - `friend:*` (offline: empty lists)
+  - `csrng`
+- **Measured:** first logo frame at about 5 s. On lavapipe (CPU Vulkan, 2 cores): about 4.6 fps, 130 draws/frame,
+  0 shader translation failures.
+
+### Testing without a GPU
+
+The build machine has no GPU. Tests use **lavapipe** (Mesa 25.0.7's CPU Vulkan driver) with `SDL_VIDEO_DRIVER=offscreen`.
+SwiftShader lacks `shaderInt64` and crashes on the shaders. Building lavapipe here took:
+- LLVM 18.1.8 (release tarball)
+- flex 2.6.4
+- a stub `libtinfo.so.5`
+- libdrm 2.4.97 with its version bumped to 2.4.124, plus stubs
+- `-Dcpp_rtti=false`
+- a one-line patch to `lvp_device.c` so its WSI platform is always on, for a headless surface
+
+`LARECOMP_SHOT_AT=5,40` saves those frames to `build/frames/` in the game folder, `LARECOMP_SAVE_MSL=1` keeps the
+generated GLSL in `build/glsl/`, `ARK_RUN_SECONDS=N` exits after N seconds, and `ARK_LOG_OPEN=1` logs every file open.
+
+### Next
+
+1. **RomFS for the title screen** (requested from the user): the title sequence `bin/demo/sequence/sd9010_title.bseq`
+   loads `bin/demo/graphic/sd/sd9010/*` models, `bin/effect/demo/sd9010/*.ptcl`,
+   `bin/effect/field/particle/uiux/game_start/*.ptcl` and `bin/appli/title_demo/bin/title_demo_01.arc`.
+2. **Storage images:** bind `st.img` as Vulkan storage images and translate `SUST`/`SULD`/`SURED`/`SUATOM`.
+3. **Windows build** on the user's PC (RX 9070 XT): the first run needs real-GPU feedback.
+4. `pl:u` and `ectx:aw` are logging stubs. The game draws its text from its own fonts, so this hasn't mattered yet.
 
 ## Design decisions so far
 

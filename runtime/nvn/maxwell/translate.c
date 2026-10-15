@@ -1431,6 +1431,52 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                     sp(&c->body, "      if (ok) *(device uint *)(gmem + ga + %du) = %s;\n", k * 4, R(d == RZ ? RZ : d + k));
         }
         sp(&c->body, "    }\n");
+    } else if (OPM(0xebf8000000000000ull, 0xfff8000000000000ull)) {  // RED: global reduction, no result
+        // operand Rd(0..7), address Ra(8..15) (+ Ra+1 when .E, bit 48), size 20..22, op 23..25, offset 28..47
+        // (an absolute, unsigned offset when Ra is RZ)
+        int size = (int)bits(w, 20, 3), op = (int)bits(w, 23, 3);
+        bool e = bits(w, 48, 1);
+        if (!c->glsl) { fail(c, "red (msl)"); return; }
+        c->info->uses_gmem = true;
+        c->uses_gmem_store = true;
+        char addr[256];
+        if (a == RZ) sprintf(addr, "ulong(%lluu)", (unsigned long long)bits(w, 28, 20));
+        else if (e) sprintf(addr, "((ulong(%s) << 32 | ulong(%s)) + ulong(%lld))", R(a + 1), R(a), (long long)sbits(w, 28, 20));
+        else sprintf(addr, "(ulong(%s) + ulong(%lld))", R(a), (long long)sbits(w, 28, 20));
+        sp(&c->body, "    { ulong ga = %s - 0x%llxul; if (ga < 0x%llxul) { uint wi = uint(ga >> 2);\n", addr,
+           (unsigned long long)maxwell_gmem_base, (unsigned long long)maxwell_gmem_size);
+        const char *v = R(d);
+        if (size == 0 || size == 1) {  // U32 / S32
+            static const char *const direct[] = {"atomicAdd", NULL, NULL, NULL, NULL, "atomicAnd", "atomicOr", "atomicXor"};
+            if (direct[op]) sp(&c->body, "      %s(gmem_.w[wi], %s);\n", direct[op], v);
+            else {  // MIN / MAX (signedness from the size) and the wrapping INC / DEC: compare-and-swap loop
+                const char *nv;
+                char nb[256];
+                if (op == 1) nv = size ? (sprintf(nb, "uint(min(int(o), int(%s)))", v), nb) : (sprintf(nb, "min(o, %s)", v), nb);
+                else if (op == 2) nv = size ? (sprintf(nb, "uint(max(int(o), int(%s)))", v), nb) : (sprintf(nb, "max(o, %s)", v), nb);
+                else if (op == 3) nv = (sprintf(nb, "(o >= %s ? 0u : o + 1u)", v), nb);
+                else nv = (sprintf(nb, "((o == 0u || o > %s) ? %s : o - 1u)", v, v), nb);
+                sp(&c->body, "      uint o = gmem_.w[wi]; for (int it = 0; it < 64; it++) { uint p = atomicCompSwap(gmem_.w[wi], o, %s); "
+                   "if (p == o) break; o = p; }\n", nv);
+            }
+        } else if ((size == 2 || size == 5) && op == 0) {  // U64 / S64 add: low word, then the high word with the carry
+            sp(&c->body, "      uint lo = atomicAdd(gmem_.w[wi], %s); uint cy = (lo + %s < lo) ? 1u : 0u;\n", v, v);
+            sp(&c->body, "      atomicAdd(gmem_.w[wi + 1u], %s + cy);\n", R(d == RZ ? RZ : d + 1));
+        } else if ((size == 2 || size == 5) && op >= 5 && op <= 7) {  // 64-bit AND / OR / XOR: per word
+            static const char *const fn[] = {"atomicAnd", "atomicOr", "atomicXor"};
+            sp(&c->body, "      %s(gmem_.w[wi], %s); %s(gmem_.w[wi + 1u], %s);\n", fn[op - 5], v, fn[op - 5], R(d == RZ ? RZ : d + 1));
+        } else if (size == 3 && op == 0) {  // F32 add
+            sp(&c->body, "      uint o = gmem_.w[wi]; for (int it = 0; it < 64; it++) { uint p = atomicCompSwap(gmem_.w[wi], o, "
+               "floatBitsToUint(uintBitsToFloat(o) + uintBitsToFloat(%s))); if (p == o) break; o = p; }\n", v);
+        } else {
+            fail(c, "red size %d op %d", size, op);
+        }
+        sp(&c->body, "    } }\n");
+    } else if (OPM(0xeb20000000000000ull, 0xffe0000000000000ull) || OPM(0xeb40000000000000ull, 0xffe0000000000000ull)) {
+        // SUST / SURED: stores and reductions to a storage image. Image bindings aren't wired to Vulkan yet, so the
+        // write is dropped (the rest of the shader runs).
+        c->info->drops_image_writes = true;
+        sp(&c->body, "    /* %s dropped */\n", (w >> 53) == (0xeb40000000000000ull >> 53) ? "sured" : "sust");
     } else if (emit_half(c, w)) {
     } else if (OPM(0x50f8000000000000ull, 0xfff8000000000000ull)) {  // FSWZADD
         // per quad lane (laneid & 3), 2 bits of the swizzle pick: a+b, b-a, a-b, b
