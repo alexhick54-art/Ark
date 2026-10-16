@@ -2,6 +2,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -9,6 +10,7 @@
 
 #include "../hle.h"
 #include "../rando.h"
+#include "../mods.h"
 #include "../ipc.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
@@ -253,9 +255,34 @@ static void rom_index(int fd) {
     // (in a copy) to point them at data appended past the end of the image; reads there go to host files.
     for (int i = 0; i < rom_nfiles; i++) {
         char host[1200];
-        if (!rando_romfs_override(rom_files[i].path, host, sizeof host)) continue;
+        // Ark: mods (ARK_MODS folder) and in-memory app_config edits (ARK_LOD), as well as the randomizer
+        bool hosted = rando_romfs_override(rom_files[i].path, host, sizeof host) || mods_romfs_override(rom_files[i].path, host, sizeof host);
+        uint8_t *edited = NULL;
+        uint64_t edited_size = 0;
+        if (getenv("ARK_LOD") && strstr(rom_files[i].path, "app_config/")) {
+            uint64_t osz = rom_files[i].size;
+            uint8_t *orig = NULL;
+            bool ok = false;
+            if (hosted) {  // a mod's version of the file, edited in turn
+                FILE *hf = fopen(host, "rb");
+                if (hf) {
+                    fseek(hf, 0, SEEK_END);
+                    osz = (uint64_t)ftell(hf);
+                    fseek(hf, 0, SEEK_SET);
+                    orig = malloc(osz ? osz : 1);
+                    ok = fread(orig, 1, osz, hf) == osz;
+                    fclose(hf);
+                }
+            } else {
+                orig = malloc(osz ? osz : 1);
+                ok = pread(fd, orig, osz, (off_t)rom_files[i].off) == (ssize_t)osz;
+            }
+            if (ok) edited = mods_config_edit(rom_files[i].path, orig, osz, &edited_size);
+            free(orig);
+        }
         struct stat sb;
-        if (stat(host, &sb)) continue;
+        if (edited) sb.st_size = (off_t)edited_size;
+        else if (!hosted || stat(host, &sb)) continue;
         if (!ov_meta) {
             ov_meta = malloc(fsz);
             memcpy(ov_meta, fmeta, fsz);
@@ -271,13 +298,13 @@ static void rom_index(int fd) {
         if (ov_n == ov_cap) { ov_cap = ov_cap ? ov_cap * 2 : 256; ov = realloc(ov, sizeof *ov * ov_cap); }
         ov[ov_n].start = ov_end;
         ov[ov_n].size = size;
-        ov[ov_n].path = strdup(host);
+        ov[ov_n].path = edited ? NULL : strdup(host);
         ov[ov_n].fd = -1;
-        ov[ov_n].mem = NULL;
+        ov[ov_n].mem = edited;
         ov_n++;
         ov_end = (ov_end + size + 0xF) & ~0xFull;
     }
-    if (ov_n) LOG("[fs] randomizer: %d romfs files replaced\n", ov_n);
+    if (ov_n) LOG("[fs] %d romfs files replaced\n", ov_n);
     if (ov_meta) { patches[npatches++] = (Patch){ov_meta_off, ov_meta_size, ov_meta}; }
     add_new_files(fd, h, dmeta, dsz, fsz);
     qsort(rom_files, rom_nfiles, sizeof *rom_files, rom_cmp);

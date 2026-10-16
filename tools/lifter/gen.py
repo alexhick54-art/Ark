@@ -51,6 +51,12 @@ class Module:
         self.stats = Counter()
         self.setjmp_entries = self.find_setjmp_entries()
         self.mu = None
+        # Ark: run-time alternatives (variants.py), for the sites whose word matches this version
+        self.variants = {}
+        for off, (orig, alt, group) in VARIANTS.get(name, {}).items():
+            a = base + off
+            if self.in_text(a) and self.word(a) == orig:
+                self.variants[a] = (alt, group)
 
     def in_text(self, a):
         return self.lo <= a < self.hi and a % 4 == 0
@@ -564,6 +570,14 @@ class Module:
                 out.append('    else { ' + ' '.join(self.render_single(ins, a, jump, refs)) + ' } }')
                 last = 'op'
                 continue
+            if a in self.variants:  # Ark: run-time alternative (variants.py): ark_variant(group) picks
+                alt, group = self.variants[a]
+                flush()
+                v = self.lifter.lift(alt, a)
+                out.append(f'    {{ extern int ark_variant(int); if (ark_variant({group})) {{ ' + ' '.join(self.render_single(v, a, jump, refs)) +
+                           ' } else { ' + ' '.join(self.render_single(ins, a, jump, refs)) + ' } }')
+                last = 'op'
+                continue
             if a in PATCHES:  # hand-written replacement for one instruction (tools/patches.py)
                 flush()
                 out.append('    ' + PATCHES[a](self, a))
@@ -635,6 +649,7 @@ class Module:
 
 
 from patches import PATCHES
+from variants import VARIANTS
 
 TABLE_FALLBACK = os.environ.get('ARK_TABLE_FALLBACK', '0') not in ('', '0')
 
