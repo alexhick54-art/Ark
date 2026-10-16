@@ -120,6 +120,11 @@ result. That is the start of milestone 3.
   - A timed condition-variable wait that times out returns without re-acquiring the mutex (Horizon semantics; the
     SDK re-locks). LAS re-acquired it, which deadlocked.
   - A wake that races the timeout is kept.
+  - A condition-variable wait raises the key's has-waiters flag before releasing the mutex, as Horizon does. The SDK
+    only calls SignalProcessWideKey when that flag is set, so releasing first lost wakeups: the game froze on a black
+    screen after the language menu, its main thread asleep on a semaphore whose count was already 1.
+- **Hang watchdog** (`runtime/main.c`): no frame presented for 20 s logs every live guest thread's wait state and
+  frame-pointer chain (`ARK_WATCHDOG=0` turns it off; `kill -USR1` does the same on Linux).
 - **setjmp/longjmp** (the game's Lua): each guest `setjmp` call site gets a host `setjmp` checkpoint keyed by the
   guest `jmp_buf`, and the guest `longjmp` is replaced (`runtime/hle/setjmp.c`, `gen.py: find_setjmp_entries`).
 - **Services added:**
