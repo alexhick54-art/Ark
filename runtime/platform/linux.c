@@ -81,7 +81,21 @@ static void sample_handler(int sig, siginfo_t *si, void *uc) {
     __atomic_store_n(&sample_done, 1, __ATOMIC_RELEASE);
 }
 
-bool plat_thread_pc(intptr_t clock, pthread_t host, uint64_t *pc) {
+bool plat_thread_start(PlatThread *out, void *(*fn)(void *), void *arg, size_t reserve) {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, reserve);  // (mmap'd: reserved, pages backed on first touch)
+    pthread_t t;
+    int r = pthread_create(&t, &attr, fn, arg);
+    pthread_attr_destroy(&attr);
+    if (r) return false;
+    *out = (PlatThread)t;
+    return true;
+}
+
+void plat_thread_join(PlatThread t) { pthread_join((pthread_t)t, NULL); }
+
+bool plat_thread_pc(intptr_t clock, PlatThread host, uint64_t *pc) {
     (void)clock;
     static bool installed;
     if (!installed) {
@@ -93,7 +107,7 @@ bool plat_thread_pc(intptr_t clock, pthread_t host, uint64_t *pc) {
         sigaction(SIGPROF, &sa, NULL);
     }
     __atomic_store_n(&sample_done, 0, __ATOMIC_RELEASE);
-    if (pthread_kill(host, SIGPROF)) return false;
+    if (pthread_kill((pthread_t)host, SIGPROF)) return false;
     for (int i = 0; i < 2000 && !__atomic_load_n(&sample_done, __ATOMIC_ACQUIRE); i++) {
         struct timespec ts = {0, 2000};
         nanosleep(&ts, NULL);

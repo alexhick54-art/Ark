@@ -272,12 +272,15 @@ static KThread *thread_new(uint64_t entry, uint64_t arg, uint64_t stack_top, int
 }
 
 static void thread_start(KThread *t) {
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, 256ull << 20);  // guest recursion runs on the host stack
     t->started = true;
-    pthread_create(&t->host, &attr, thread_main, t);
-    pthread_attr_destroy(&attr);
+    // guest recursion runs on the host stack: 256 MB reserved (fewer if the address space or commit runs short)
+    for (size_t mb = 256; mb >= 16; mb /= 2) {
+        if (plat_thread_start(&t->host, thread_main, t, mb << 20)) {
+            if (mb != 256) LOG("[kernel] thread %x started with a %zu MB stack\n", t->handle, mb);
+            return;
+        }
+    }
+    FATAL("[kernel] could not start thread %x (entry %llx): out of memory?\n", t->handle, (unsigned long long)t->entry);
 }
 
 KThread *kernel_create_main_thread(uint64_t entry, uint64_t stack_size, int prio) {
@@ -907,7 +910,7 @@ void kernel_stop_threads(void (*idle)(void)) {
     }
     int n = 0;
     for (KThread *t = g_threads; t; t = t->anext)
-        if (t->started) { pthread_join(t->host, NULL); n++; }
+        if (t->started) { plat_thread_join(t->host); n++; }
     LOG("[reboot] %d guest threads stopped in %llums\n", n, (unsigned long long)((plat_now_ns() - t0) / 1000000));
 }
 
@@ -943,7 +946,7 @@ static void dump_waits(int sig) {
         uint32_t v = t->wait_addr ? __atomic_load_n((uint32_t *)(uintptr_t)t->wait_addr, __ATOMIC_RELAXED) : 0;
         if (t->finished) continue;
         fprintf(stderr, "[kernel] thread %x prio %d %s addr %llx value %08x mutex %llx tag %x lr %llx fp %llx\n", t->handle,
-                t->prio, t->in_sync_wait ? "sync-wait" : t->wait_kind <= WAIT_ARBITER ? kind[t->wait_kind] : "?",
+                t->prio, !t->started ? "created (not started)" : t->in_sync_wait ? "sync-wait" : t->wait_kind <= WAIT_ARBITER ? kind[t->wait_kind] : "?",
                 (unsigned long long)t->wait_addr, v, (unsigned long long)t->wait_mutex, t->wait_tag,
                 (unsigned long long)t->cpu.x[30], (unsigned long long)t->cpu.x[29]);
         // the guest's frame-pointer chain (return addresses; symbolize offline against the NSOs)

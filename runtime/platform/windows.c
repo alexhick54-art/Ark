@@ -88,7 +88,28 @@ uint64_t plat_thread_cpu_ns(intptr_t clock) {
     return (kt + ut) * 100;  // 100 ns units
 }
 
-bool plat_thread_pc(intptr_t clock, pthread_t host, uint64_t *pc) {
+typedef struct { void *(*fn)(void *); void *arg; } ThreadStart;
+static DWORD WINAPI thread_trampoline(LPVOID p) {
+    ThreadStart s = *(ThreadStart *)p;
+    free(p);
+    s.fn(s.arg);
+    return 0;
+}
+
+bool plat_thread_start(PlatThread *out, void *(*fn)(void *), void *arg, size_t reserve) {
+    ThreadStart *s = malloc(sizeof *s);
+    if (!s) return false;
+    s->fn = fn;
+    s->arg = arg;
+    HANDLE h = CreateThread(NULL, reserve, thread_trampoline, s, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
+    if (!h) { free(s); return false; }
+    *out = (PlatThread)h;
+    return true;
+}
+
+void plat_thread_join(PlatThread t) { WaitForSingleObject((HANDLE)t, INFINITE); }
+
+bool plat_thread_pc(intptr_t clock, PlatThread host, uint64_t *pc) {
     (void)host;
     HANDLE h = (HANDLE)clock;
     if (!h || SuspendThread(h) == (DWORD)-1) return false;

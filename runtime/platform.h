@@ -38,7 +38,13 @@ void plat_thread_realtime(uint64_t period_ns);  // periodic timing thread (vsync
 intptr_t plat_thread_clock(void);
 uint64_t plat_thread_cpu_ns(intptr_t clock);
 // Where a thread is right now (its host pc), for the sampling profiler (runtime/sampler.c); false if unknown
-bool plat_thread_pc(intptr_t clock, pthread_t host, uint64_t *pc);
+typedef uintptr_t PlatThread;
+bool plat_thread_pc(intptr_t clock, PlatThread host, uint64_t *pc);
+// Start a thread whose stack has `reserve` bytes of address space, committed only as it grows. Windows: pthread
+// stack sizes are committed up front, so 256 MB guest-thread stacks used up the commit limit and thread creation
+// then failed (silently: the game waited forever for threads that never ran). false on failure.
+bool plat_thread_start(PlatThread *out, void *(*fn)(void *), void *arg, size_t reserve);
+void plat_thread_join(PlatThread t);
 
 // ---- process
 void plat_init(void);                                // first thing in main()

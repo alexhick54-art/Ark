@@ -21,7 +21,7 @@ typedef KObject KEvent;
 struct KThread {
     KObject obj;  // signaled when the thread exits
     Cpu cpu;
-    pthread_t host;
+    PlatThread host;
     uint64_t entry, tlr, id;
     uint32_t handle;
     int prio, core;
