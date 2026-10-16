@@ -52,6 +52,27 @@ typedef u128 __attribute__((aligned(1), may_alias)) u128u;
 #define FPCR_RM (3u << 22)
 #define FPCR_SLOW (FPCR_FZ | FPCR_RM)
 
+// Ark: whether FP ops need the per-operation slow path (fesetround). FPCR.FZ alone doesn't: on x86-64 it is the
+// host's MXCSR FTZ|DAZ, applied lazily whenever FZ changes (fz_host). Legends: Arceus runs its main and worker
+// threads with FZ set, and the slow path (rounding mode read and set twice per operation, every vector lane on its
+// own) made them several times slower, most of all on Windows, whose fegetround/fesetround are costly.
+#if defined(__x86_64__)
+#include <xmmintrin.h>
+static __attribute__((noinline)) void simd_apply_fz(Cpu *c, uint64_t want) {
+    _mm_setcsr((_mm_getcsr() & ~0x8040u) | (want ? 0x8040u : 0));  // FTZ (bit 15) | DAZ (bit 6)
+    c->fz_host = want;
+}
+static inline __attribute__((always_inline)) int simd_slow(Cpu *c) {
+    uint64_t f = c->fpcr;
+    if (__builtin_expect(f & FPCR_RM, 0)) return 1;
+    uint64_t want = (f >> 24) & 1;
+    if (__builtin_expect(want != c->fz_host, 0)) simd_apply_fz(c, want);
+    return 0;
+}
+#else
+static inline __attribute__((always_inline)) int simd_slow(Cpu *c) { return (c->fpcr & FPCR_SLOW) != 0; }
+#endif
+
 enum { FOP_ADD, FOP_SUB, FOP_MUL, FOP_MULX, FOP_NMUL, FOP_DIV, FOP_ABD, FOP_SQRT, FOP_MADD, FOP_RECPS, FOP_RSQRTS,
        FOP_MAX, FOP_MIN, FOP_MAXNM, FOP_MINNM };
 
@@ -277,7 +298,7 @@ SI float simd_d2s(Cpu *c, double x) {
         return fv_s((uint32_t)(u >> 63) << 31 | 0x7fc00000u | (uint32_t)((u >> 29) & 0x3fffff));
     }
     x = fv_d(u);
-    if (__builtin_expect(c->fpcr & FPCR_SLOW, 0)) {
+    if (__builtin_expect(simd_slow(c), 0)) {
         if ((c->fpcr & FPCR_FZ) && __builtin_fabs(x) < 0x1p-126 && x != 0) return fv_s((uint32_t)(u >> 63) << 31);
         return simd_d2s_slow(c, x);
     }

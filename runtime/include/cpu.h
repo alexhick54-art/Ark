@@ -17,7 +17,8 @@ typedef struct __attribute__((aligned(16))) Cpu {
     uint64_t fpcr;           // 320: guest FPCR/FPSR (portable FP/SIMD lowering only; the asm path uses the host's)
     uint64_t fpsr;           // 328
     uint64_t excl_val2;      // 336: high half of a 128-bit exclusive (LDXP/STXP), Ark addition
-    uint8_t _pad[512 - 344];
+    uint64_t fz_host;        // 344: x86-64: FPCR.FZ as last applied to this thread's MXCSR (FTZ|DAZ), Ark addition
+    uint8_t _pad[512 - 352];
     __uint128_t v[32];       // 512
 } Cpu;
 
@@ -27,6 +28,7 @@ _Static_assert(offsetof(Cpu, nzcv) == 272, "nzcv");
 _Static_assert(offsetof(Cpu, fpcr) == 320, "fpcr");
 _Static_assert(offsetof(Cpu, fpsr) == 328, "fpsr");
 _Static_assert(offsetof(Cpu, excl_val2) == 336, "excl_val2");
+_Static_assert(offsetof(Cpu, fz_host) == 344, "fz_host");
 _Static_assert(offsetof(Cpu, v) == 512, "v");
 
 typedef void (*GuestFn)(Cpu *);

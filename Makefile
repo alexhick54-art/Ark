@@ -81,7 +81,7 @@ gen:
 objs: $(GEN_OBJ)
 	@echo "compiled $(words $(GEN_OBJ)) files"
 
-$(B)/obj/%.o: $(GEN)/%.c runtime/include/cpu.h
+$(B)/obj/%.o: $(GEN)/%.c runtime/include/cpu.h runtime/include/simd.h runtime/include/simd_fp.h
 	@mkdir -p $(dir $@)
 	@$(CC) $(GENFLAGS) -c $< -o $@
 
