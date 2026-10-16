@@ -363,6 +363,13 @@ static uint32_t block_current(int64_t timeout_ns) {
             break;
         }
         if (!kwait(timeout_ns, &ts)) {
+            // Ark: a timed condvar wait that was already signalled, but whose mutex was still held, waits for the
+            // mutex without a deadline (Horizon dequeues it from the condvar at the signal). Timing out here dropped
+            // that signal: SignalProcessWideKey(count 1) had picked this thread, so no other waiter woke up.
+            if (t->wait_kind == WAIT_MUTEX) {
+                timeout_ns = -1;
+                continue;
+            }
             // Ark: kwait re-takes g_klock before returning, and a waker may have run in between (signalled the condvar
             // and handed us the mutex, or released a mutex to us). Then the wake stands: overwriting it with a
             // timeout made the condvar path re-acquire a mutex it already owned and wait for itself forever.
