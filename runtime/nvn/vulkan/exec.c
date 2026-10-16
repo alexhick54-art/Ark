@@ -1131,7 +1131,11 @@ static VkFormat vertex_format(uint32_t f) {
     case 0x3F: return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
     case 0x40: return VK_FORMAT_E5B9G9R9_UFLOAT_PACK32;
     case 0x51: return VK_FORMAT_R8_UINT;
-    default: return VK_FORMAT_R32G32B32A32_SFLOAT;
+    default: {
+        static uint8_t told[256];
+        if (!told[f & 0xFF]++) LOG("[vk] vertex attribute format %#x unknown: read as 4 floats\n", f);
+        return VK_FORMAT_R32G32B32A32_SFLOAT;
+    }
     }
 }
 
