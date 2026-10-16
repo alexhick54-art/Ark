@@ -6,11 +6,12 @@ Target: Pokémon Legends: Arceus v1.1.1, main build ID `AEE8F150DDA1B5A838806E1A
 
 ## Where it stands (2026-10-16)
 
-**The recompiled game plays its whole opening.** On Linux, through Ark's NVN-on-Vulkan layer (tested on lavapipe):
-logo, first-boot language menu, Arceus's realm with dialogue text, appearance selection, name entry (the swkbd HLE
-answers "Ark"), the cutscene, and the "Pokémon Legends: Arceus" title logo (~frame 3,900). It then loads the field and
-stops on the first field file missing from the test RomFS (`bin/effect/field/...`). Scripted A presses
-(`LARECOMP_INPUT`) drive it. The Windows build compiles and links on the user's PC; its first run is being debugged.
+**The recompiled game reaches Hisui.** On Linux, through Ark's NVN-on-Vulkan layer (tested on lavapipe): logo,
+first-boot language menu, Arceus's realm with dialogue text, appearance selection, name entry (the swkbd HLE answers
+"Ark"), the cutscene, the title logo, and then the field: Prelude Beach with terrain, sky, buildings, effects and the
+first dialogue ("Are you alive, my boy?!"), around frame 4,300. Characters were missing there (their shaders use
+`LEA`, now implemented). Scripted A presses (`LARECOMP_INPUT`) drive it. The Windows build compiles and links on the
+user's PC; its first run is being debugged.
 
 | Milestone | State |
 |---|---|
@@ -88,7 +89,7 @@ result. That is the start of milestone 3.
   The game asks for 524 NVN functions; 495 have implementations, and the rest log once and return 0.
   `vulkan/device.c` enables only the device features that are present (`ARK_FEAT`).
 - **Shaders:** Maxwell → GLSL (`maxwell/translate.c`) → SPIR-V (shaderc). Ark added:
-  - `RED` (global reductions), `VMNMX`, `TMML` (LOD query; the effect shaders use it).
+  - `RED` (global reductions), `VMNMX`, `TMML` (LOD query; the effect shaders use it), `LEA` / `LEA.HI`.
   - `SUST`/`SURED` are accepted, but **their writes are dropped**: storage images aren't bound to Vulkan yet
     (`CMD_BIND_IMAGES` is recorded but not used). The programs that hit this are a per-frame depth / tile pass
     (480x270, no colour output); they are logged as "image stores dropped". `SULD` isn't implemented.
@@ -113,6 +114,9 @@ result. That is the start of milestone 3.
   with `ubfx` indexes; an `adr` feeding a `br` on the same register within 48 instructions is a table base, not a
   function start (main: 1,817 tables, 29 all-label fallbacks).
 - **Kernel fixes found on the way:**
+  - A timed condition-variable wait that was signalled while its mutex was held now waits for the mutex without a
+    deadline (Horizon dequeues it at the signal). Timing out there dropped the signal, and every guest thread ended
+    up asleep (seen once in the opening).
   - A timed condition-variable wait that times out returns without re-acquiring the mutex (Horizon semantics; the
     SDK re-locks). LAS re-acquired it, which deadlocked.
   - A wake that races the timeout is kept.
@@ -142,7 +146,8 @@ generated GLSL in `build/glsl/`, `ARK_RUN_SECONDS=N` exits after N seconds, and 
 ### Next
 
 1. **RomFS:** the test image has boot, sound (minus `Default.pck`), core, UI, resident, title, story and Pokémon
-   folders (~2.4 GB of 6.4); `tools/pack_romfs.ps1` packs folders into upload-sized zips. `romfs_field` (`bin\archive\field bin\field\model bin\effect\field`) and `romfs_pokemon`
+   and field folders (~3.7 GB of 6.4); `tools/pack_romfs.ps1` packs folders into upload-sized zips. Missing: battle
+   effects (1.9 GB), `Default.pck` (sound), credits. `romfs_field` (`bin\archive\field bin\field\model bin\effect\field`) and `romfs_pokemon`
    (`bin\archive\pokemon bin\appli\res_pokemon`) are requested; battle effects and `Default.pck` after that.
 2. **Storage images:** bind `st.img` as Vulkan storage images and translate `SUST`/`SULD`/`SURED`/`SUATOM`.
 3. **Windows build** on the user's PC (RX 9070 XT): the first run needs real-GPU feedback.
