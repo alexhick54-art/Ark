@@ -805,6 +805,19 @@ VkSampler vk_sampler(NvnSamplerDesc *d) {
     if (si.maxLod < si.minLod) si.maxLod = si.minLod;
     si.mipLodBias = d->lod_bias;
     if (d->max_aniso > 1) { si.anisotropyEnable = VK_TRUE; si.maxAnisotropy = fminf(d->max_aniso, 16); }
+    // Ark: ARK_ANISO=<n> (2..16): anisotropic filtering for every mipmapped, filtered sampler (sharper ground and
+    // walls at an angle); ARK_TEX_LOD_BIAS=<f> (e.g. -0.5): mip level bias (negative: sharper, finer mips sooner)
+    static float aniso = -1, bias = 0;
+    if (aniso < 0) {
+        aniso = getenv("ARK_ANISO") ? fminf(fmaxf((float)atof(getenv("ARK_ANISO")), 0), 16) : 0;
+        bias = getenv("ARK_TEX_LOD_BIAS") ? (float)atof(getenv("ARK_TEX_LOD_BIAS")) : 0;
+        if (aniso > 1 && !g_vk.aniso) aniso = 0;
+    }
+    if (aniso > 1 && mf >= 2 && si.minFilter == VK_FILTER_LINEAR && !d->compare_mode && aniso > si.maxAnisotropy) {
+        si.anisotropyEnable = VK_TRUE;
+        si.maxAnisotropy = aniso;
+    }
+    if (bias != 0 && mf >= 2 && !d->compare_mode) si.mipLodBias += bias;
     static float lodmin = -1;
     if (lodmin < 0) lodmin = getenv("LARECOMP_LOD_MIN") ? (float)atof(getenv("LARECOMP_LOD_MIN")) : 0;
     if (lodmin > 0 && mf > 1) si.minLod = fmaxf(si.minLod, lodmin);

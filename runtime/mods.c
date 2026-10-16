@@ -26,41 +26,49 @@ bool mods_romfs_override(const char *path, char *host, size_t size) {
 // ---- app_config edits. These files are FlatBuffers holding a list of entries, each a key string followed by its
 // value strings ("200", "0", "500", "-10"). An edit sets value `idx` of `key`: in place when the new text fits,
 // otherwise appended to the file with the one offset that points at the old string redirected.
-typedef struct { const char *file, *key; int idx; const char *value; int preset; } Edit;  // preset: lowest ARK_LOD
+typedef struct { const char *file, *key; int idx; const char *value; int preset; } Edit;  // preset: lowest level using it
 
-// Values from the community draw-distance mods for Legends: Arceus ("LoD wip" 2.6 for preset 1, its larger terrain and
-// shadow settings for 2).
+// Each setting is "value,...,max,min" ("40,100,1": 40, at most 100). Presets: ARK_LOD=1/2/3 (draw distance; 1 and 2 are
+// the community LoD mods' values, 3 is as far as the settings go) and ARK_SHADOWS=1 (preset 100 below). Values above a
+// setting's max get the max raised with them. The trees' near fade (kTreeFadeDistanceNear) is left alone: the mods'
+// change to it made trunks vanish close to the camera.
+#define CC "field_common_config.bin"
+#define AF "field_anime_framerate_config.bin"
+#define SH "field_shadow_config.bin"
+#define CAM "field_camera_config.bin"
 static const Edit edits[] = {
-    {"field_common_config.bin", "kArea00NpcPokeLoadRadius", 0, "600", 1},
-    {"field_common_config.bin", "kArea00NpcLoadRadius", 0, "600", 1},
-    {"field_common_config.bin", "kDetailFadeDistanceNear", 1, "1", 1},
-    {"field_common_config.bin", "kDetailFadeDistanceNear", 3, "2", 1},
-    {"field_common_config.bin", "kDetailFadeCoefficient", 0, "0.05", 1},
-    {"field_common_config.bin", "kTreeFadeDistanceFar", 0, "1000", 1},
-    {"field_common_config.bin", "kTreeFadeDistanceFar", 2, "2500", 1},
-    {"field_common_config.bin", "kTreeFadeDistanceNear", 1, "0", 1},
-    {"field_common_config.bin", "kTreeFadeDistanceNear", 3, "0", 1},
-    {"field_common_config.bin", "kTreeVisibleDistance", 0, "1000", 1},
-    {"field_common_config.bin", "kTreeVisibleDistance", 2, "2500", 1},
-    {"field_common_config.bin", "kTreeVisibleDistance", 3, "0", 1},
-    {"field_common_config.bin", "kDistanceOfCameraToTerrainLodPoint", 0, "21", 1},
-    {"field_common_config.bin", "kDistanceOfCameraToTerrainLodPoint", 1, "10", 1},
-    {"field_common_config.bin", "kDistanceOfCameraToStreamLoadPoint", 0, "21", 1},
-    {"field_common_config.bin", "kDistanceOfCameraToStreamLoadPoint", 1, "10", 1},
-    {"field_anime_framerate_config.bin", "framerateLv0capacity", 0, "30", 1},
-    {"field_anime_framerate_config.bin", "framerateLv1capacity", 0, "30", 1},
-    {"field_anime_framerate_config.bin", "framerateLv2capacity", 0, "30", 1},
-    {"field_anime_framerate_config.bin", "distanceBaseValue", 0, "300", 1},
-    {"field_anime_framerate_config.bin", "distanceBaseValue", 1, "300", 1},
-    // preset 2: terrain detail further out, tighter shadow cascades (sharper near shadows)
-    {"field_common_config.bin", "kDistanceOfCameraToTerrainLodPoint", 0, "50", 2},
-    {"field_common_config.bin", "kDistanceOfCameraToTerrainLodPoint", 1, "20", 2},
-    {"field_common_config.bin", "kDistanceOfCameraToStreamLoadPoint", 0, "50", 2},
-    {"field_common_config.bin", "kDistanceOfCameraToStreamLoadPoint", 1, "20", 2},
-    {"field_shadow_config.bin", "cascadeShadowSplit1", 0, "0.18", 2},
-    {"field_shadow_config.bin", "cascadeShadowSplit2", 0, "0.2", 2},
-    {"field_shadow_config.bin", "cascadeShadowSplit3", 0, "0.2", 2},
-    {"field_shadow_config.bin", "cascadeShadowSplit4", 0, "0.2", 2},
+    // 1: Pokemon/NPCs load further out, trees and small detail fade in further, distant models animate smoothly
+    {CC, "kArea00NpcPokeLoadRadius", 0, "600", 1}, {CC, "kArea00NpcPokeLoadRadius", 1, "600", 1},
+    {CC, "kArea00NpcLoadRadius", 0, "600", 1}, {CC, "kArea00NpcLoadRadius", 1, "600", 1},
+    {CC, "kDetailFadeCoefficient", 0, "0.05", 1},
+    {CC, "kTreeFadeDistanceFar", 0, "1000", 1}, {CC, "kTreeFadeDistanceFar", 2, "2500", 1},
+    {CC, "kTreeVisibleDistance", 0, "1000", 1}, {CC, "kTreeVisibleDistance", 2, "2500", 1},
+    {CC, "kDistanceOfCameraToTerrainLodPoint", 0, "21", 1},
+    {CC, "kDistanceOfCameraToStreamLoadPoint", 0, "21", 1},
+    {AF, "framerateLv0capacity", 0, "30", 1}, {AF, "framerateLv0capacity", 1, "30", 1},
+    {AF, "framerateLv1capacity", 0, "30", 1}, {AF, "framerateLv1capacity", 1, "30", 1},
+    {AF, "framerateLv2capacity", 0, "30", 1}, {AF, "framerateLv2capacity", 1, "30", 1},
+    {AF, "distanceBaseValue", 0, "300", 1}, {AF, "distanceBaseValue", 1, "300", 1},
+    // 2: terrain detail further out
+    {CC, "kDistanceOfCameraToTerrainLodPoint", 0, "50", 2},
+    {CC, "kDistanceOfCameraToStreamLoadPoint", 0, "50", 2},
+    // 3: as far as it goes
+    {CC, "kArea00NpcPokeLoadRadius", 0, "1000", 3}, {CC, "kArea00NpcPokeLoadRadius", 1, "1000", 3},
+    {CC, "kArea00NpcLoadRadius", 0, "1000", 3}, {CC, "kArea00NpcLoadRadius", 1, "1000", 3},
+    {CC, "kDetailFadeCoefficient", 0, "0.01", 3},
+    {CC, "kTreeFadeDistanceFar", 0, "5000", 3}, {CC, "kTreeFadeDistanceFar", 2, "10000", 3},
+    {CC, "kTreeVisibleDistance", 0, "5000", 3}, {CC, "kTreeVisibleDistance", 2, "10000", 3},
+    {CC, "kDistanceOfCameraToTerrainLodPoint", 0, "100", 3},
+    {AF, "framerateLv0capacity", 0, "100", 3}, {AF, "framerateLv0capacity", 1, "100", 3},
+    {AF, "framerateLv1capacity", 0, "100", 3}, {AF, "framerateLv1capacity", 1, "100", 3},
+    {AF, "framerateLv2capacity", 0, "100", 3}, {AF, "framerateLv2capacity", 1, "100", 3},
+    {AF, "distanceBaseValue", 0, "1000", 3}, {AF, "distanceBaseValue", 1, "1000", 3},
+    {CAM, "default_far", 0, "20000", 3},
+    // ARK_SHADOWS=1: the shadow cascades pulled in (more of the shadow map near the player: sharper shadows)
+    {SH, "cascadeShadowSplit1", 0, "0.18", 100},
+    {SH, "cascadeShadowSplit2", 0, "0.2", 100},
+    {SH, "cascadeShadowSplit3", 0, "0.2", 100},
+    {SH, "cascadeShadowSplit4", 0, "0.2", 100},
 };
 
 typedef struct { uint8_t *d; uint64_t n, cap; } Buf;
@@ -123,10 +131,12 @@ static bool set_value(Buf *b, uint64_t st, const char *v) {
     return true;
 }
 
+static bool active(const Edit *ed, int lod, int shadows) { return ed->preset == 100 ? shadows : ed->preset <= lod; }
+
 uint8_t *mods_config_edit(const char *path, const uint8_t *data, uint64_t size, uint64_t *out_size) {
     const char *e = getenv("ARK_LOD");
-    int preset = e ? atoi(e) : 0;
-    if (preset <= 0) return NULL;
+    int lod = e ? atoi(e) : 0, shadows = getenv("ARK_SHADOWS") && atoi(getenv("ARK_SHADOWS")) > 0;
+    if (lod <= 0 && !shadows) return NULL;
     const char *name = strrchr(path, '/');
     name = name ? name + 1 : path;
     if (!strstr(path, "app_config/")) return NULL;
@@ -134,10 +144,10 @@ uint8_t *mods_config_edit(const char *path, const uint8_t *data, uint64_t size, 
     int done = 0;
     for (size_t i = 0; i < sizeof edits / sizeof *edits; i++) {
         const Edit *ed = &edits[i];
-        if (ed->preset > preset || strcmp(ed->file, name)) continue;
+        if (!active(ed, lod, shadows) || strcmp(ed->file, name)) continue;
         bool superseded = false;  // (a higher preset's value for the same setting wins)
         for (size_t j = i + 1; j < sizeof edits / sizeof *edits; j++)
-            superseded |= edits[j].preset <= preset && !strcmp(edits[j].file, ed->file) && !strcmp(edits[j].key, ed->key) &&
+            superseded |= active(&edits[j], lod, shadows) && !strcmp(edits[j].file, ed->file) && !strcmp(edits[j].key, ed->key) &&
                           edits[j].idx == ed->idx;
         if (superseded) continue;
         if (!b.d) { b.cap = size * 2 + 256; b.d = malloc(b.cap); memcpy(b.d, data, size); b.n = size; }
@@ -146,7 +156,7 @@ uint8_t *mods_config_edit(const char *path, const uint8_t *data, uint64_t size, 
         done++;
     }
     if (!b.d) return NULL;
-    LOG("[mods] draw distance preset %d: %d settings changed in %s\n", preset, done, name);
+    LOG("[mods] draw distance %d%s: %d settings changed in %s\n", lod, shadows ? " + shadows" : "", done, name);
     *out_size = b.n;
     return b.d;
 }
