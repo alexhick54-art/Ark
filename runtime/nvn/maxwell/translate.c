@@ -1564,6 +1564,25 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         sprintf(t, "uint(%s(%s(%s(%s, %s)), %s(%s)))", op == 5 ? "min" : "max", dsg ? "int" : "uint",
                 bits(w, 56, 1) ? "max" : "min", av, bv, dsg ? "int" : "uint", cv);
         set_reg(c, d, t);
+    } else if (OPM(0x5bd0000000000000ull, 0xfff8000000000000ull) || OPM(0x4bd0000000000000ull, 0xfff0000000000000ull) ||
+               OPM(0x36d0000000000000ull, 0xfef8000000000000ull)) {  // LEA (lo): d = b + (a << scale), P = carry out
+        int scale = (int)bits(w, 39, 5), p = (int)bits(w, 48, 3);
+        if (bits(w, 46, 1) || bits(w, 47, 1)) { fail(c, "lea.lo x/cc"); return; }
+        sp(&c->body, "    { uint lb = %s; uint lo = (%s%s) << %du; uint ls = lb + lo;\n", B(false), bits(w, 45, 1) ? "0u - " : "", R(a), scale);
+        if (p != PT) { c->pred_used[p] = 1; sp(&c->body, "      p%d = ls < lb;\n", p); }
+        if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      r%d = ls;\n", d); }
+        sp(&c->body, "    }\n");
+    } else if (OPM(0x5bd8000000000000ull, 0xfff8000000000000ull) || OPM(0x1800000000000000ull, 0xfc00000000000000ull)) {
+        // LEA.HI: d = b + (((ulong(c) << 32 | a) [negated]) >> (32 - scale)), c = Ra+? (REG_39)
+        bool cb = (w >> 58) == (0x1800000000000000ull >> 58);
+        int scale = cb ? (int)bits(w, 51, 5) : (int)bits(w, 28, 5);
+        bool neg = cb ? bits(w, 56, 1) : bits(w, 37, 1), x = cb ? bits(w, 57, 1) : bits(w, 38, 1);
+        if (x || bits(w, 47, 1) || bits(w, 48, 3) != PT) { fail(c, "lea.hi x/cc/pred"); return; }
+        char bb[160];
+        const char *bv = cb ? cbuf_ref(c, (int)bits(w, 34, 5), bits(w, 20, 14) * 4, NULL, bb) : R((int)bits(w, 20, 8));
+        sprintf(t, "(%s + uint(((%s(ulong(%s) << 32 | ulong(%s)))) >> %du))", bv, neg ? "0ul - " : "", R((int)bits(w, 39, 8)), R(a),
+                32 - scale);
+        set_reg(c, d, t);
     } else if (emit_half(c, w)) {
     } else if (OPM(0x50f8000000000000ull, 0xfff8000000000000ull)) {  // FSWZADD
         // per quad lane (laneid & 3), 2 bits of the swizzle pick: a+b, b-a, a-b, b
