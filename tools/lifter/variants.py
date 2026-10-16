@@ -9,6 +9,11 @@ Legends: Arceus 1.1.1, ARK_60FPS=1: code that steps by a fixed 1/30 s (0x3D08888
   2  update functions' fixed-step fallback (flag ? frame time : 1/30)
   4  objects' default time step, stored by their constructors
   8  1/30 passed as the time step argument, or returned by a getter
+
+Group 16 (ARK_LOD=3, or ARK_LOD0=1): models always at their full-detail level. The per-model level-of-detail update
+(main+0x1ACD904) switches on the model's LOD mode (+496): 0 and 4 (what the game's SetLodLevelZero command sets) pick
+level 0, 1-3 choose by distance. Its load of the mode becomes `mov w8, #4`.
+
 Left at 1/30: conversions between frames and seconds of 30 fps data (main+0x8EEDB4, main+0x191D2B8), and vector code
 that only tests against the value.
 """
@@ -56,5 +61,6 @@ VARIANTS = {
         0x301526c: (0xf2a7a104, 0xf2a79104, 4),
         0x3018b94: (0xf2a7a105, 0xf2a79105, 4),
         0x301e520: (0xf2a7a109, 0xf2a79109, 4),
+        0x1acd924: (0xb941f2a8, 0x52800088, 16),  # ldr w8, [x21, #496] -> mov w8, #4 (LOD level 0)
     },
 }

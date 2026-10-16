@@ -15,9 +15,17 @@ static int sites_mask = 15;
 
 // Run-time alternatives in the translated code (tools/lifter/variants.py): 1/30 s fixed steps in code, 1/60 s at 60 fps.
 // ARK_60FPS_SITES=<mask> picks the groups (default all; 0 none), to narrow down a group that misbehaves.
-int ark_variant(int group) { return g_ark_60fps == 1 && (sites_mask & group) != 0; }
+static int force_lod0;
+int ark_variant(int group) {
+    if (group == 16) return force_lod0;
+    return g_ark_60fps == 1 && (sites_mask & group) != 0;
+}
 
 void game_patches_apply(void) {
+    // ARK_LOD=3 (or ARK_LOD0=1): every model at its full-detail level (tools/lifter/variants.py group 16)
+    force_lod0 = (getenv("ARK_LOD") && atoi(getenv("ARK_LOD")) >= 3) || (getenv("ARK_LOD0") && atoi(getenv("ARK_LOD0")) != 0);
+    if (getenv("ARK_LOD0") && atoi(getenv("ARK_LOD0")) == 0) force_lod0 = 0;
+    if (force_lod0) LOG("[patch] models at full detail (no level of detail)\n");
     const char *e = getenv("ARK_60FPS");
     g_ark_60fps = e ? atoi(e) : 0;
     if (!g_ark_60fps) return;
