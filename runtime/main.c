@@ -72,6 +72,29 @@ static void *run_limit_thread(void *arg) {
 }
 #endif
 
+#ifndef ARK_HEADLESS
+// Hang watchdog: no frame presented for 20 s (after the first one) logs every guest thread's wait state once per
+// stall, so a log from a frozen game says what it is waiting for. ARK_WATCHDOG=0 turns it off.
+static void *watchdog_thread(void *arg) {
+    (void)arg;
+    extern uint64_t renderer_present_count(void);
+    uint64_t last = 0;
+    int still = 0;
+    bool reported = false;
+    for (;;) {
+        sleep(1);
+        uint64_t n = renderer_present_count();
+        if (n != last || !n) { last = n; still = 0; reported = false; continue; }
+        if (++still >= 20 && !reported) {
+            reported = true;
+            LOG("[watchdog] no frame presented for %d s (frame %llu): guest threads:\n", still, (unsigned long long)n);
+            kernel_dump_waits();
+        }
+    }
+    return NULL;
+}
+#endif
+
 // LAS's in-place reboot is not used by Ark yet; kernel.c still references these.
 int rt_reboot_requested(void) { return 0; }
 void rt_request_reboot(int kind) { (void)kind; }
@@ -146,6 +169,11 @@ int main(int argc, char **argv) {
         limit = atoi(secs);
         pthread_t t;
         pthread_create(&t, NULL, run_limit_thread, &limit);
+    }
+    const char *wd = getenv("ARK_WATCHDOG");
+    if (!wd || atoi(wd) != 0) {
+        pthread_t w;
+        pthread_create(&w, NULL, watchdog_thread, NULL);
     }
     extern int ui_run(void);
     ui_run();

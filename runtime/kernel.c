@@ -410,12 +410,16 @@ static uint32_t svc_arbitrate_unlock(uint64_t addr) {
 static uint32_t svc_wait_process_wide_key(uint64_t mutex, uint64_t key, uint32_t tag, int64_t timeout) {
     pthread_mutex_lock(&g_klock);
     KThread *t = t_cur;
-    mutex_release(mutex);
+    // Ark: the key's has-waiters flag goes up BEFORE the mutex is released, as Horizon does. The SDK's Signal only calls
+    // SignalProcessWideKey when that flag is set, and a signaller needs only the (user-space) mutex: releasing first
+    // let one lock it, post (a semaphore's count, say), see the flag still 0 and skip the signal, and this thread then
+    // slept forever with the count already up (Legends: Arceus froze on a black screen after the language menu).
+    __atomic_store_n(u32p(key), 1, __ATOMIC_SEQ_CST);
     t->wait_kind = WAIT_CONDVAR;
     t->wait_addr = key;
     t->wait_mutex = mutex;
     t->wait_tag = tag;
-    __atomic_store_n(u32p(key), 1, __ATOMIC_SEQ_CST);
+    mutex_release(mutex);
     uint32_t r = block_current(timeout);
     // Ark: on a timeout Horizon returns WITHOUT the mutex and user code re-locks it itself (the SDK's
     // InternalConditionVariable::TimedWait calls Enter; libnx's condvarWaitTimeout does the same). LAS re-acquired
@@ -927,11 +931,23 @@ static void dump_waits(int sig) {
     fprintf(stderr, "[kernel] --- thread wait states ---\n");
     for (KThread *t = g_threads; t; t = t->anext) {
         uint32_t v = t->wait_addr ? __atomic_load_n((uint32_t *)(uintptr_t)t->wait_addr, __ATOMIC_RELAXED) : 0;
-        fprintf(stderr, "[kernel] thread %x prio %d %s addr %llx value %08x mutex %llx tag %x lr %llx\n", t->handle, t->prio,
-                t->wait_kind <= WAIT_ARBITER ? kind[t->wait_kind] : "?", (unsigned long long)t->wait_addr, v,
-                (unsigned long long)t->wait_mutex, t->wait_tag, (unsigned long long)t->cpu.x[30]);
+        if (t->finished) continue;
+        fprintf(stderr, "[kernel] thread %x prio %d %s addr %llx value %08x mutex %llx tag %x lr %llx fp %llx\n", t->handle,
+                t->prio, t->in_sync_wait ? "sync-wait" : t->wait_kind <= WAIT_ARBITER ? kind[t->wait_kind] : "?",
+                (unsigned long long)t->wait_addr, v, (unsigned long long)t->wait_mutex, t->wait_tag,
+                (unsigned long long)t->cpu.x[30], (unsigned long long)t->cpu.x[29]);
+        // the guest's frame-pointer chain (return addresses; symbolize offline against the NSOs)
+        fprintf(stderr, "[kernel]   stack:");
+        uint64_t fp = t->cpu.x[29];
+        for (int i = 0; i < 16 && fp && !(fp & 7) && fp >= 0x7000000000ull && fp < 0x8000000000ull; i++) {
+            fprintf(stderr, " %llx", (unsigned long long)((uint64_t *)(uintptr_t)fp)[1]);
+            fp = ((uint64_t *)(uintptr_t)fp)[0];
+        }
+        fprintf(stderr, "\n");
     }
 }
+
+void kernel_dump_waits(void) { dump_waits(0); }
 
 void kernel_init(void) {
 #ifndef _WIN32

@@ -66,3 +66,4 @@ uint64_t kernel_heap_size(void);  // bytes from HEAP_BASE set by SetHeapSize
 // its heaps and GPU pools). Copies up to max merged ranges, returns how many; *gen changes whenever they change.
 int kernel_phys_regions(uint64_t *addr, uint64_t *size, int max, uint64_t *gen);
 uint64_t kernel_phys_gen(void);
+void kernel_dump_waits(void);  // every guest thread's wait state, to stderr (hang diagnosis)
