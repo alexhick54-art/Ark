@@ -650,15 +650,10 @@ NVN(nvnWindowSetNumActiveTextures) { WIN->active = (int)A(1); }
 NVN(nvnWindowGetPresentInterval) { RET(WIN->interval); }
 NVN(nvnWindowSetPresentInterval) {
     int interval = (int)A(1);
-    // Ark: ARK_60FPS=1 (experimental): Legends: Arceus 1.1.1 sets its interval from a setting ([x21 + 72] + 1 at
-    // main+2aa2788, x21 still the caller's here: callee-saved); set that setting to 0 as well, so the game itself
-    // knows it presents every vsync, and present at interval 1.
-    static int fps60 = -1;
-    if (fps60 < 0) fps60 = getenv("ARK_60FPS") && atoi(getenv("ARK_60FPS")) != 0;
-    if (fps60 && c->x[30] == 0x7002aa27acull && interval == 2) {
-        uint32_t *setting = (uint32_t *)(uintptr_t)(c->x[21] + 72);
-        if (*setting == 1) { *setting = 0; interval = 1; }
-    }
+    // Ark: ARK_60FPS (runtime/patches.c): Legends: Arceus 1.1.1's switch to interval 2 (main+0x2AA27A8) is ignored,
+    // so the window keeps the interval 1 it was created with
+    extern int g_ark_60fps;
+    if (g_ark_60fps && c->x[30] == 0x7002aa27acull) interval = WIN->interval;
     if (WIN->interval != interval) LOG("[nvn] window present interval %d (lr %llx)\n", interval, (unsigned long long)c->x[30]);
     WIN->interval = interval;
 }

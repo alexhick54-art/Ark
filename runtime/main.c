@@ -107,6 +107,8 @@ static void boot(const char *root) {
     g_romfs_dir = strdup(romfs);
 
     loader_load(exefs);
+    extern void game_patches_apply(void);
+    game_patches_apply();
     kernel_init();
     dispatch_init();
 
