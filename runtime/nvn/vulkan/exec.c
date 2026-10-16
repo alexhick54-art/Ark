@@ -546,6 +546,10 @@ static void builds_check(void);
 static void save_text(const char *path, const char *text);
 const char *renderer_stats(void) {
     builds_check();
+    {
+        static int n;
+        if (++n % 15 == 0) vk_memory_report("periodic");
+    }
     static int dumps;
     if (dumps++ < 3) {
         LOG("[vk] command counts:");

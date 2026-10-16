@@ -246,6 +246,21 @@ static Dead *dead;
 static int ndead, cap_dead;
 static void views_forget(TexBackend *b);
 
+static uint64_t g_tex_bytes;  // device memory of live texture images (memory report)
+static int g_nlive;
+// Ark: device memory use (logged every 30 s from renderer_stats, and when an allocation fails)
+void vk_memory_report(const char *why) {
+    VmaBudget bud[VK_MAX_MEMORY_HEAPS];
+    vmaGetHeapBudgets(g_vk.vma, bud);
+    const VkPhysicalDeviceMemoryProperties *mp;
+    vmaGetMemoryProperties(g_vk.vma, &mp);
+    LOG("[vk] memory (%s): textures %d, %.0f MB; heaps:", why, g_nlive, g_tex_bytes / 1048576.0);
+    for (uint32_t h = 0; h < mp->memoryHeapCount; h++)
+        LOG(" %u%s %.0f/%.0f MB", h, (mp->memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) ? "(vram)" : "",
+            bud[h].usage / 1048576.0, bud[h].budget / 1048576.0);
+    LOG("; %d deferred frees\n", ndead);
+}
+
 void vk_collect_dead(void) {
     uint64_t done = vk_completed_seq();
     int k = 0;
@@ -317,6 +332,20 @@ static void create_image(NvnTexture *t, TexBackend *b) {
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     VkResult r = vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL);
+    if (r == VK_ERROR_OUT_OF_DEVICE_MEMORY || r == VK_ERROR_OUT_OF_HOST_MEMORY) {
+        // Ark: out of memory: release what finished submissions left behind, then try again
+        vk_memory_report("image allocation failed");
+        extern void vk_wait_seq(uint64_t seq);
+        extern uint64_t vk_pending_seq(void);
+        vk_wait_seq(vk_pending_seq() - 1);
+        vk_collect_dead();
+        r = vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL);
+        if (r != VK_SUCCESS) {  // last resort: host memory (slow, but no crash)
+            VmaAllocationCreateInfo host = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
+            r = vmaCreateImage(g_vk.vma, &ci, &host, &b->image, &b->mem, NULL);
+            LOG("[vk] image %ux%u (nvn fmt %#x) %s\n", tw, th, t->format, r == VK_SUCCESS ? "placed in system memory" : "could not be allocated");
+        }
+    }
     if (r != VK_SUCCESS) {
         LOG("[vk] image creation failed (%d): nvn fmt %#x %ux%ux%u target %u\n", r, t->format, t->width, t->height, t->depth, t->target);
         ci.format = vf = VK_FORMAT_R8G8B8A8_UNORM;
@@ -325,6 +354,12 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         ci.flags &= ~VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
         VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &b->image, &b->mem, NULL));
         depthfmt = false;
+    }
+    {
+        VmaAllocationInfo inf;
+        vmaGetAllocationInfo(g_vk.vma, b->mem, &inf);
+        b->bytes = inf.size;
+        g_tex_bytes += inf.size;
     }
     b->format = vf;
     b->width = tw; b->height = th; b->depth = depth; b->layers = layers; b->levels = levels; b->samples = samples;
@@ -367,6 +402,8 @@ static uint32_t level_h(const TexBackend *b, uint32_t lv) { uint32_t v = b->heig
 
 static void destroy_image(TexBackend *b) {
     views_forget(b);
+    g_tex_bytes -= b->bytes;
+    b->bytes = 0;
     if (b->image || b->mem) defer((Dead){.img = b->image, .mem = b->mem});  // (never the same allocation twice)
     b->image = VK_NULL_HANDLE;
     b->mem = VK_NULL_HANDLE;

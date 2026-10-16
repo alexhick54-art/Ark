@@ -75,7 +75,8 @@ typedef struct TexBackend {
     bool gpu_owned, uploaded, dynamic;
     uint64_t data_hash, sample_hash, checked_frame, full_frame;
     bool scalable, presented;
-    float fixed_scale;  // Ark: >1: allocated at this multiple of its size (shadow maps, ARK_SHADOWS)
+    float fixed_scale;
+    uint64_t bytes;     // device memory of the image  // Ark: >1: allocated at this multiple of its size (shadow maps, ARK_SHADOWS)
     uint64_t touched_frame, frame_cleared;
     uint32_t level_gen;
     float sx, sy;
@@ -105,6 +106,7 @@ void vk_defer_image(VkImage img, VmaAllocation mem);
 void vk_defer_view(VkImageView v);
 void vk_views_forget(TexBackend *b);  // drop (deferred) the cached views of an image being replaced
 uint64_t vk_frame_counter(void);
+void vk_memory_report(const char *why);
 
 // ---- shaders / pipelines (shaders.c)
 VkShaderModule vk_compile_glsl(const char *src, int stage, const char *name);  // NULL on failure (logged)
