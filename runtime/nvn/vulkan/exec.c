@@ -1001,7 +1001,12 @@ static void translate_program(void *arg) {
     maxwell_gmem_size = HEAP_MAX;
     pthread_mutex_lock(&translate_lock);
     p->vi = maxwell_translate((const uint8_t *)(uintptr_t)p->code[0], p->cmax[0], STAGE_VERTEX, &p->vkey);
-    if (p->vi->msl) {
+    if (p->vi->msl && !p->code[1]) {
+        // Ark: vertex-only program: a fragment shader that writes nothing (out_mask 0 masks every colour write)
+        static ShaderInfo empty_fs;
+        if (!empty_fs.msl) empty_fs.msl = "#version 450\nvoid main() {}\n";
+        p->fi = &empty_fs;
+    } else if (p->vi->msl) {
         p->fkey.vs_out_mask = p->vi->out_mask;
         p->fi = maxwell_translate((const uint8_t *)(uintptr_t)p->code[1], p->cmax[1], STAGE_FRAGMENT, &p->fkey);
     }
@@ -1036,13 +1041,15 @@ static Prog *get_program(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
         for (int i = 0; i < nseen; i++) known |= seen[i] == np->stage_mask;
         if (!known && nseen < 64) {
             seen[nseen++] = np->stage_mask;
-            LOG("[vk] programs with stages %#x (bit 0 vertex, 1 fragment, 2 geometry, 3 tess control, 4 tess eval) are not drawn yet "
+            LOG("[vk] programs with stages %#x (bit 0 vertex, 1 fragment, 2 geometry, 3 tess control, 4 tess eval): stages past "
+            "vertex+fragment are not drawn yet; vertex-only is drawn depth-only "
                 "(vs %llx)\n", np->stage_mask, (unsigned long long)np->stages[0].code_addr);
         }
-        if (!(np->stage_mask & 1) || !(np->stage_mask & 2)) return NULL;
+        // vertex-only programs (shadow maps, depth pre-passes) are drawn with an empty fragment shader
+        if (!(np->stage_mask & 1)) return NULL;
     }
     uint64_t h = 0xcbf29ce484222325ull;
-    for (int i = 0; i < 2; i++) { uint64_t a = np->stages[i].code_addr; for (int k = 0; k < 8; k++) { h ^= (a >> (k * 8)) & 0xFF; h *= 0x100000001B3ull; } }
+    for (int i = 0; i < 2; i++) { uint64_t a = (np->stage_mask >> i) & 1 ? np->stages[i].code_addr : 0; for (int k = 0; k < 8; k++) { h ^= (a >> (k * 8)) & 0xFF; h *= 0x100000001B3ull; } }
     const uint8_t *vb = (const uint8_t *)vkey;
     for (size_t i = 0; i < sizeof *vkey; i++) { h ^= vb[i]; h *= 0x100000001B3ull; }
     for (int i = 0; i < 8; i++) { h ^= fkey->rt_kind[i]; h *= 0x100000001B3ull; }
@@ -1054,7 +1061,7 @@ static Prog *get_program(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
     prog_tab[slot].key = h;
     prog_tab[slot].prog = p;
     for (int i = 0; i < 2; i++) {
-        p->code[i] = np->stages[i].code_addr;
+        p->code[i] = (np->stage_mask >> i) & 1 ? np->stages[i].code_addr : 0;
         p->cmax[i] = np->stages[i].const_offset ? np->stages[i].const_offset : 0x10000;
     }
     p->vkey = *vkey;
@@ -2023,7 +2030,7 @@ static void draw_(CmdRec *r, bool indexed) {
     }
     {   // fragment-shader hash: interior backdrop detection (widescreen), skip lists, item twinkle (renderer.m)
         static uint64_t last_fs, last_hash;
-        uint64_t fs = st.program->stages[1].code_addr;
+        uint64_t fs = st.program->stage_mask & 2 ? st.program->stages[1].code_addr : 0;
         if (fs != last_fs) {
             last_fs = fs;
             last_hash = fs ? hmix(1469598103934665603ull, (const void *)(uintptr_t)(fs + 0x30), 0x200) : 0;
