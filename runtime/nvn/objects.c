@@ -649,10 +649,30 @@ NVN(nvnQueueAcquireTexture) {
     w->next = (w->next + 1) % (w->active ? w->active : 1);
     RET(0);
 }
+// Ark: presenting blocks until the window's next vsync slot, as on the Switch: the present interval is in 60 Hz
+// vsyncs (1: 60 fps, 2: 30 fps). Legends: Arceus paces its game logic by this, so without it the game ran at the
+// host's frame rate (144 fps on a 144 Hz monitor: everything too fast). ARK_PRESENT_INTERVAL=N overrides the
+// game's interval, 0 turns pacing off.
+static void present_pace(int interval) {
+    static int forced = -2;
+    if (forced == -2) forced = getenv("ARK_PRESENT_INTERVAL") ? atoi(getenv("ARK_PRESENT_INTERVAL")) : -1;
+    if (forced >= 0) interval = forced;
+    static int logged = -1;
+    if (interval != logged) { logged = interval; LOG("[nvn] present interval %d (%s)\n", interval, interval > 0 ? "paced" : "unpaced"); }
+    if (interval <= 0) return;
+    static uint64_t next;
+    const uint64_t vsync = 16666667ull;  // 60 Hz
+    uint64_t period = (uint64_t)interval * vsync, now = plat_now_ns();
+    if (!next || now > next + 4 * period) next = now;  // first present, or far behind (a load): don't race to catch up
+    else if (next > now) plat_sleep_until_ns(next);
+    next += period;
+}
+
 NVN(nvnQueuePresentTexture) {
     NvnWindow *w = HOST(NvnWindow, A(1));
     int i = (int)A(2);
     if (i >= 0 && i < w->num) backend_present(HOST(NvnTexture, w->textures[i]));
+    present_pace(w->interval);
 }
 
 // ================================================================== small state objects
