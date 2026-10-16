@@ -537,7 +537,10 @@ void vk_prof_frame(uint64_t frame, uint64_t present_ns) {
     last_t = now; l_exec = cum_exec; l_wait = cum_wait; l_draws = cum_draws; l_subs = cum_submits;
 }
 
+static void builds_check(void);
+static void save_text(const char *path, const char *text);
 const char *renderer_stats(void) {
+    builds_check();
     static int dumps;
     if (dumps++ < 3) {
         LOG("[vk] command counts:");
@@ -966,6 +969,15 @@ static void save_glsl(const char *src, uint64_t addr, const char *suffix) {
     if (f) { fputs(src, f); fclose(f); }
 }
 
+void vk_save_prog_glsl(const void *prog, const char *prefix) {
+    const Prog *p = prog;
+    char path[160];
+    snprintf(path, sizeof path, "%s_vs.glsl", prefix);
+    save_text(path, p && p->vi ? p->vi->msl : NULL);
+    snprintf(path, sizeof path, "%s_fs.glsl", prefix);
+    save_text(path, p && p->fi ? p->fi->msl : NULL);
+}
+
 static void compile_program(void *arg) {
     Prog *p = arg;
     size_t nv = 0, nf = 0;
@@ -1248,6 +1260,43 @@ static VkPrimitiveTopology topo_class_base(uint8_t c) {
     return c == 0 ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST : c == 1 ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 }
 
+// Pipeline builds in progress (the driver compiles the shaders here): one that takes long is reported once, with its
+// shaders' GLSL saved to build/slow_<vs>_<fs>_{vs,fs}.glsl, since a driver compiler that runs out of memory takes
+// the process down without saying which shader it was on.
+#define MAX_BUILDS 32
+static struct { _Atomic uint64_t start; const void *prog; uint64_t vs, fs; bool reported; } builds[MAX_BUILDS];
+static int build_begin(const void *prog, uint64_t vs, uint64_t fs) {
+    for (int i = 0; i < MAX_BUILDS; i++) {
+        uint64_t z = 0;
+        if (atomic_compare_exchange_strong(&builds[i].start, &z, ~0ull)) {
+            builds[i].prog = prog; builds[i].vs = vs; builds[i].fs = fs; builds[i].reported = false;
+            atomic_store(&builds[i].start, SDL_GetTicksNS());
+            return i;
+        }
+    }
+    return -1;
+}
+static void build_end(int i) { if (i >= 0) atomic_store(&builds[i].start, 0); }
+static void save_text(const char *path, const char *text) {
+    FILE *f = text ? fopen(path, "w") : NULL;
+    if (f) { fputs(text, f); fclose(f); }
+}
+static void builds_check(void) {
+    uint64_t now = SDL_GetTicksNS();
+    for (int i = 0; i < MAX_BUILDS; i++) {
+        uint64_t t = atomic_load(&builds[i].start);
+        if (!t || t == ~0ull || builds[i].reported || now - t < 5000000000ull) continue;
+        builds[i].reported = true;
+        LOG("[vk] a pipeline build has taken %.0fs so far: vs %llx fs %llx (GLSL in build/slow_%llx_%llx_*.glsl)\n",
+            (now - t) / 1e9, (unsigned long long)builds[i].vs, (unsigned long long)builds[i].fs, (unsigned long long)builds[i].vs,
+            (unsigned long long)builds[i].fs);
+        extern void vk_save_prog_glsl(const void *prog, const char *prefix);
+        char prefix[96];
+        snprintf(prefix, sizeof prefix, "build/slow_%llx_%llx", (unsigned long long)builds[i].vs, (unsigned long long)builds[i].fs);
+        vk_save_prog_glsl(builds[i].prog, prefix);
+    }
+}
+
 static void build_pipeline(void *arg) {
     Pipe *pp = arg;
     PipeKey *k = &pp->k;
@@ -1304,10 +1353,13 @@ static void build_pipeline(void *arg) {
                                        .pStages = stages, .pVertexInputState = &vi, .pInputAssemblyState = &ia, .pViewportState = &vs,
                                        .pRasterizationState = &rs, .pMultisampleState = &ms, .pDepthStencilState = &ds,
                                        .pColorBlendState = &cb, .pDynamicState = &dy, .layout = k->prog->layout};
+    int bi = build_begin(k->prog, k->prog->code[0], k->prog->code[1]);
     VkResult r = vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &pp->pipe);
+    build_end(bi);
     if (r != VK_SUCCESS) {
         static int n;
-        if (n++ < 10) LOG("[vk] pipeline creation failed: %d\n", r);
+        if (n++ < 10) LOG("[vk] pipeline creation failed: %d (vs %llx fs %llx)\n", r, (unsigned long long)k->prog->code[0],
+                          (unsigned long long)k->prog->code[1]);
     }
     atomic_fetch_add(&stat_compiles, 1);
     atomic_store(&pp->state, r == VK_SUCCESS ? 1 : 2);
