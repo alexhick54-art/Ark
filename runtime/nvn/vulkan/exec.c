@@ -1029,7 +1029,18 @@ static void translate_program(void *arg) {
 static struct { uint64_t key; Prog *prog; } prog_tab[PROG_TAB];
 
 static Prog *get_program(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
-    if (!(np->stage_mask & 1) || !(np->stage_mask & 2)) return NULL;
+    if (!(np->stage_mask & 1) || !(np->stage_mask & 2) || (np->stage_mask & ~3u & 0x1F)) {
+        static uint32_t seen[64];
+        static int nseen;
+        bool known = false;
+        for (int i = 0; i < nseen; i++) known |= seen[i] == np->stage_mask;
+        if (!known && nseen < 64) {
+            seen[nseen++] = np->stage_mask;
+            LOG("[vk] programs with stages %#x (bit 0 vertex, 1 fragment, 2 geometry, 3 tess control, 4 tess eval) are not drawn yet "
+                "(vs %llx)\n", np->stage_mask, (unsigned long long)np->stages[0].code_addr);
+        }
+        if (!(np->stage_mask & 1) || !(np->stage_mask & 2)) return NULL;
+    }
     uint64_t h = 0xcbf29ce484222325ull;
     for (int i = 0; i < 2; i++) { uint64_t a = np->stages[i].code_addr; for (int k = 0; k < 8; k++) { h ^= (a >> (k * 8)) & 0xFF; h *= 0x100000001B3ull; } }
     const uint8_t *vb = (const uint8_t *)vkey;
