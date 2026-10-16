@@ -75,6 +75,7 @@ typedef struct TexBackend {
     bool gpu_owned, uploaded, dynamic;
     uint64_t data_hash, sample_hash, checked_frame, full_frame;
     bool scalable, presented;
+    float fixed_scale;  // Ark: >1: allocated at this multiple of its size (shadow maps, ARK_SHADOWS)
     uint64_t touched_frame, frame_cleared;
     uint32_t level_gen;
     float sx, sy;

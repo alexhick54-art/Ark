@@ -151,6 +151,20 @@ void renderer_get_scale(float *sx, float *sy) { *sx = g_rs_x; *sy = g_rs_y; }
 void renderer_set_scale(float sx, float sy) { g_rs_x = sx; g_rs_y = sy; }
 uint64_t renderer_present_count(void);
 
+// Ark: ARK_SHADOWS=1 (or ARK_SHADOW_RES=<n>, 2..4): the shadow map at n times its resolution (2 by default with
+// ARK_SHADOWS). Legends: Arceus renders its shadows into a square 1024x1024 target pair: an R32F colour target (0x3)
+// and a depth buffer. Draws into it get a scaled viewport and shaders a scaled size like any scaled render target.
+static float tex_fixed_scale(const NvnTexture *t) {
+    static float s = -1;
+    if (s < 0) {
+        s = getenv("ARK_SHADOW_RES") ? (float)atof(getenv("ARK_SHADOW_RES")) : getenv("ARK_SHADOWS") && atoi(getenv("ARK_SHADOWS")) > 0 ? 2 : 1;
+        if (s > 4) s = 4;
+    }
+    if (s <= 1 || t->target != 1 || t->samples > 1 || !(t->flags & 8)) return 1;
+    if (t->width != t->height || t->width < 512 || t->width > 2048) return 1;
+    return t->format == 0x3 || renderer_format_is_depth(t->format) ? s : 1;
+}
+
 static bool tex_scalable(const NvnTexture *t) {
     if (getenv("LARECOMP_NO_SCALE")) return false;
     if (t->target != 1 || t->samples > 1 || !(t->flags & 8) || t->width < 32 || t->height < 16) return false;
@@ -210,7 +224,7 @@ bool renderer_texture_presented(NvnTexture *t) {
 
 void renderer_texture_scale(NvnTexture *t, float *sx, float *sy) {
     TexBackend *b = t ? (TexBackend *)t->backend : NULL;
-    if (b && b->scalable) { *sx = b->sx; *sy = b->sy; }
+    if (b && (b->scalable || b->fixed_scale > 1)) { *sx = b->sx; *sy = b->sy; }
     else { *sx = 1; *sy = 1; }
 }
 
@@ -245,10 +259,10 @@ void vk_collect_dead(void) {
 
 static void create_image(NvnTexture *t, TexBackend *b) {
     VkFmt mf = fmt_of(t->format);
-    b->sx = b->scalable ? g_rs_x : 1;
-    b->sy = b->scalable ? g_rs_y : 1;
+    b->sx = b->scalable ? g_rs_x : b->fixed_scale > 1 ? b->fixed_scale : 1;
+    b->sy = b->scalable ? g_rs_y : b->fixed_scale > 1 ? b->fixed_scale : 1;
     uint32_t tw = t->width ? t->width : 1, th = t->height ? t->height : 1;
-    if (b->scalable) {
+    if (b->scalable || b->fixed_scale > 1) {
         tw = (uint32_t)lroundf(tw * b->sx); th = (uint32_t)lroundf(th * b->sy);
         if (tw < 1) tw = 1;
         if (th < 1) th = 1;
@@ -386,6 +400,11 @@ static TexBackend *tex_backend(NvnTexture *t) {
     vk_collect_dead();
     b = calloc(1, sizeof *b);
     b->scalable = tex_scalable(t);
+    b->fixed_scale = b->scalable ? 1 : tex_fixed_scale(t);
+    if (b->fixed_scale > 1) {
+        static int logged;
+        if (logged++ < 4) LOG("[vk] shadow map %ux%u (format %#x) at %gx\n", t->width, t->height, t->format, b->fixed_scale);
+    }
     create_image(t, b);
     t->backend = b;
     live_add(t, b);
