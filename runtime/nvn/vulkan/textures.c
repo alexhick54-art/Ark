@@ -152,15 +152,15 @@ void renderer_set_scale(float sx, float sy) { g_rs_x = sx; g_rs_y = sy; }
 uint64_t renderer_present_count(void);
 
 // Ark: ARK_SHADOWS=1 (or ARK_SHADOW_RES=<n>, 2..4): the shadow map at n times its resolution (2 by default with
-// ARK_SHADOWS). Legends: Arceus renders its shadows into a square 1024x1024 target pair: an R32F colour target (0x3)
-// and a depth buffer. Draws into it get a scaled viewport and shaders a scaled size like any scaled render target.
+// ARK_SHADOWS). Legends: Arceus renders its shadow cascades into a 1024x1024 2D-array target pair: an R32F colour
+// target (0x3) and a depth buffer. Draws into it get a scaled viewport and shaders a scaled size like any scaled render target.
 static float tex_fixed_scale(const NvnTexture *t) {
     static float s = -1;
     if (s < 0) {
         s = getenv("ARK_SHADOW_RES") ? (float)atof(getenv("ARK_SHADOW_RES")) : getenv("ARK_SHADOWS") && atoi(getenv("ARK_SHADOWS")) > 0 ? 2 : 1;
         if (s > 4) s = 4;
     }
-    if (s <= 1 || t->target != 1 || t->samples > 1 || !(t->flags & 8)) return 1;
+    if (s <= 1 || (t->target != 1 && t->target != 4) || t->samples > 1 || !(t->flags & 8)) return 1;  // (4: the cascades' array)
     if (t->width != t->height || t->width < 512 || t->width > 2048) return 1;
     return t->format == 0x3 || renderer_format_is_depth(t->format) ? s : 1;
 }
@@ -401,6 +401,8 @@ static TexBackend *tex_backend(NvnTexture *t) {
     b = calloc(1, sizeof *b);
     b->scalable = tex_scalable(t);
     b->fixed_scale = b->scalable ? 1 : tex_fixed_scale(t);
+    if (getenv("ARK_LOG_SQUARE_RT") && t->width == t->height && t->width >= 512)
+        LOG("[vk] square texture %ux%u target %u format %#x flags %#x samples %u\n", t->width, t->height, t->target, t->format, t->flags, t->samples);
     if (b->fixed_scale > 1) {
         static int logged;
         if (logged++ < 4) LOG("[vk] shadow map %ux%u (format %#x) at %gx\n", t->width, t->height, t->format, b->fixed_scale);
