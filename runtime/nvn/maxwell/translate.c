@@ -2051,7 +2051,7 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     // collect branch targets (labels)
     uint8_t *label = calloc(end + 4, 1);
     label[1] = 1;
-    bool any_branch = false;
+    bool any_branch = false, has_brx = false;
     for (size_t i = 0; i < end; i++) {
         if (i % 4 == 0) continue;
         uint64_t w = ((const uint64_t *)code)[i];
@@ -2065,14 +2065,35 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
             if (t >= 0 && (size_t)(t / 8) < end) label[t / 8] = 1;
             any_branch = true;
         }
-        if ((w & 0xfff0000000000000ull) == 0xe250000000000000ull) {  // BRX: any instruction may be a target
-            any_branch = true;
-            memset(label, 1, end);
-        }
+        if ((w & 0xfff0000000000000ull) == 0xe250000000000000ull) any_branch = true, has_brx = true;
         if ((w & 0xfff8000000000000ull) == 0xf0f8000000000000ull || (w & 0xfff0000000000000ull) == 0xe340000000000000ull ||
             (w & 0xfff0000000000000ull) == 0xe350000000000000ull)
             any_branch = true;
         (void)is_branch_target_op;
+    }
+    // BRX (computed jump: a switch's jump table). Ark: its targets are the blocks only reached by jumps - the instruction
+    // after an unconditional BRA / BRX / EXIT / RET / BRK / CONT / SYNC - not every instruction: a case label per
+    // instruction made AMD's shader compiler run out of memory on Legends: Arceus's UI shaders (LAS did that).
+    // LARECOMP_BRX_ALL_LABELS=1: the old behaviour.
+    if (has_brx) {
+        static int all = -1;
+        if (all < 0) all = getenv("LARECOMP_BRX_ALL_LABELS") != NULL;
+        if (all) memset(label, 1, end);
+        else
+            for (size_t i = 0; i < end; i++) {
+                if (i % 4 == 0) continue;
+                uint64_t w = ((const uint64_t *)code)[i];
+                uint64_t op = w & 0xfff0000000000000ull;
+                bool always = bits(w, 16, 3) == PT && !bits(w, 19, 1);
+                bool ends = (op == 0xe240000000000000ull && (w & 0x1f) == 0xf) || op == 0xe250000000000000ull ||
+                            op == 0xe300000000000000ull || op == 0xe320000000000000ull || op == 0xe340000000000000ull ||
+                            op == 0xe350000000000000ull || (w & 0xfff8000000000000ull) == 0xf0f8000000000000ull;
+                if (always && ends) {
+                    size_t nx = i + 1;
+                    if (nx % 4 == 0) nx++;
+                    if (nx < end) label[nx] = 1;
+                }
+            }
     }
     // translate
     bool dbg = maxwell_dbg_code && blob == maxwell_dbg_code && stage == STAGE_FRAGMENT;
