@@ -84,8 +84,8 @@ static void *watchdog_thread(void *arg) {
     for (;;) {
         sleep(1);
         uint64_t n = renderer_present_count();
-        if (n != last || !n) { last = n; still = 0; reported = false; continue; }
-        if (++still >= 20 && !reported) {
+        if (n != last) { last = n; still = 0; reported = false; continue; }
+        if (++still >= (n ? 20 : 40) && !reported) {  // (before the first frame: 40 s, boot included)
             reported = true;
             LOG("[watchdog] no frame presented for %d s (frame %llu): guest threads:\n", still, (unsigned long long)n);
             kernel_dump_waits();
