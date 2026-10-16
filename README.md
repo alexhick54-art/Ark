@@ -63,6 +63,20 @@ Requirements: Python 3.10+, clang, Unicorn's Python bindings (`pip install unico
 6. `make test-lift EXEFS=exefs` (optional) compares the translator with Unicorn on 20,000 of the game's
    instruction encodings.
 
+## Options
+
+Set as environment variables when starting Ark (e.g. `ARK_60FPS=1 build/ark game`).
+
+| Variable | Effect |
+|---|---|
+| `ARK_60FPS=1` | 60 fps at normal game speed (v1.1.1): the game's frame time tables and 42 fixed 1/30 s steps in its code become 1/60 s. `=2`: 60 fps at double speed. |
+| `ARK_60FPS_SITES=<mask>` | with `ARK_60FPS=1`, which groups of code sites switch (default 15 = all; see `tools/lifter/variants.py`). For narrowing down something that runs at the wrong speed. |
+| `ARK_LOD=1` / `2` | draw distance: Pokémon/NPC load radius, tree and detail fade distances, animation level-of-detail (1); plus terrain detail distance and tighter shadow cascades (2). Values from the community LoD mods, applied to the game's own config files in memory. |
+| `ARK_MODS=<folder>` | files under `<folder>/romfs/` replace the game's (Atmosphere's layered RomFS layout: community RomFS mods work as they are). |
+| `LARECOMP_SCALE=<f>` | render resolution scale. |
+| `LARECOMP_SAMPLE=<s>` | sampling profiler: the hottest game functions every `<s>` seconds. |
+| `LARECOMP_PROF_SVC=1` | per-thread CPU time and kernel wait times every 2 s. |
+
 ## Credits
 
 The translator, CPU helpers and the runtime's core come from **LAS Recomp** by Peiikai (MIT); see
