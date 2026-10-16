@@ -1587,21 +1587,37 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
 // (VK_EXT_external_memory_host), zero-copy like metal.m's g_guest_buffer, so GPU results land in guest memory.
 // Legends: Arceus keeps its heaps in the SDK's virtual-address memory (svcMapPhysicalMemory, runtime/kernel.c), in
 // two clusters: many small maps from ALIAS_BASE up, and one large map (~3.2 GB) far above. Each is an arena: arena 1
-// is the largest physical mapping (>= 256 MB), arena 0 spans every mapping below it. Arenas are imported in chunks
-// of the device's buffer range limit (maxwell_gmem_chunk_log2), arena 0 from chunk 0 up as it grows, arena 1 at
-// the top of the chunk array; shaders get them all as one descriptor array (set GMEM_SET, maxwell/shader.h). An
-// import pins its pages (in arena 0 the gaps between mappings too). LARECOMP_VK_NO_GMEM=1: no imports, reads 0.
-typedef struct { VkBuffer buf; VkDeviceMemory mem; uint64_t base, size; } GChunk;
-static GChunk gch[64];
+// is the largest physical mapping (>= 256 MB), arena 0 spans every mapping below it. Arenas are divided into chunks
+// of the device's buffer range limit (maxwell_gmem_chunk_log2, at most 64 MB), arena 0's from slot 0 up, arena 1's
+// at the top of the array; shaders get them as one descriptor array (set GMEM_SET, maxwell/shader.h). Only chunks
+// holding an NVN memory pool are imported - the GPU only reads pools - since an import commits and pins all of its
+// pages (importing the arenas whole ran a 16 GB Windows PC out of commit). Other addresses read 0.
+// LARECOMP_VK_NO_GMEM=1: no imports, reads return zero.
+#define MAX_GCHUNKS 128
+typedef struct { VkBuffer buf; VkDeviceMemory mem; uint64_t base, size; bool failed; } GChunk;
+static GChunk gch[MAX_GCHUNKS];
 static struct { uint64_t base, size; int c0, n; } arenas[2];
-static uint64_t arena_gen = ~0ull;  // kernel_phys_gen() the arenas were last checked against
-static uint64_t gmem_version;       // bumped whenever a chunk is (re)imported
+static uint64_t arena_gen = ~0ull, pool_gen_seen = ~0ull;
+static uint64_t gmem_version;  // bumped whenever a chunk is (re)imported
+// NVN memory pools (backend_pool_created; objects.c), the ranges to import
+static struct { uint64_t addr, size; } pools[4096];
+static int npools;
+static _Atomic uint64_t pool_gen;
+static pthread_mutex_t pools_lock = PTHREAD_MUTEX_INITIALIZER;
+
+void backend_pool_created(uint64_t addr, uint64_t size) {
+    if (!size) return;
+    pthread_mutex_lock(&pools_lock);
+    if (npools < 4096) { pools[npools].addr = addr; pools[npools].size = size; npools++; }
+    pool_gen++;
+    pthread_mutex_unlock(&pools_lock);
+}
 
 static bool gmem_import(GChunk *ch, uint64_t base, uint64_t size) {
     PFN_vkGetMemoryHostPointerPropertiesEXT props =
         (PFN_vkGetMemoryHostPointerPropertiesEXT)vkGetDeviceProcAddr(g_vk.dev, "vkGetMemoryHostPointerPropertiesEXT");
     VkMemoryHostPointerPropertiesEXT mp = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
-    plat_commit(base, size);  // (Windows: the gaps between mappings are only reserved)
+    plat_commit(base, size);  // (Windows: an import needs committed pages)
     if (!props || props(g_vk.dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, (void *)(uintptr_t)base, &mp) != VK_SUCCESS ||
         !mp.memoryTypeBits)
         return false;
@@ -1621,22 +1637,8 @@ static bool gmem_import(GChunk *ch, uint64_t base, uint64_t size) {
     if (vkCreateBuffer(g_vk.dev, &bi, NULL, &buf) != VK_SUCCESS) { vkFreeMemory(g_vk.dev, mem, NULL); return false; }
     vkBindBufferMemory(g_vk.dev, buf, mem, 0);
     // (a replaced chunk is kept: it pins the same pages and recorded work may still use it)
-    *ch = (GChunk){buf, mem, base, size};
+    *ch = (GChunk){buf, mem, base, size, false};
     gmem_version++;
-    return true;
-}
-
-// Imports chunks [arena base + k * CS, ...) for k in [have, want) into slots c0 + k; the last one ends at limit.
-static bool gmem_import_chunks(int a, int c0, int have, int want, uint64_t limit) {
-    uint64_t cs = 1ull << maxwell_gmem_chunk_log2;
-    for (int k = have; k < want; k++) {
-        uint64_t b = arenas[a].base + (uint64_t)k * cs, e = b + cs < limit ? b + cs : limit;
-        if (c0 + k < 0 || c0 + k >= maxwell_gmem_chunks || !gmem_import(&gch[c0 + k], b, e - b)) {
-            LOG("[vk] guest memory import failed at %llx (+%llu MB): shader reads there return zero\n", (unsigned long long)b,
-                (unsigned long long)((e - b) >> 20));
-            return false;
-        }
-    }
     return true;
 }
 
@@ -1646,12 +1648,34 @@ static int gmem_off(void) {
     return off;
 }
 
-// Re-reads the physical mappings when they changed and imports what is new.
+// Imports the chunks of arena a overlapping [lo, hi) (clipped to the arena) that aren't imported yet (or are
+// shorter than the arena now allows: arena 0's last chunk, as it grows).
+static void gmem_import_range(int a, uint64_t lo, uint64_t hi) {
+    uint64_t cs = 1ull << maxwell_gmem_chunk_log2, ab = arenas[a].base, ae = ab + arenas[a].size;
+    if (hi <= ab || lo >= ae) return;
+    if (lo < ab) lo = ab;
+    if (hi > ae) hi = ae;
+    for (uint64_t k = (lo - ab) / cs; k <= (hi - 1 - ab) / cs; k++) {
+        int slot = arenas[a].c0 + (int)k;
+        if (slot < 0 || slot >= maxwell_gmem_chunks || (a == 0 && slot >= arenas[1].c0 && arenas[1].n)) break;
+        uint64_t b = ab + k * cs, e = b + cs < ae ? b + cs : ae;
+        GChunk *ch = &gch[slot];
+        if (ch->failed || (ch->buf && ch->base + ch->size >= e)) continue;
+        if (!gmem_import(ch, b, e - b)) {
+            ch->failed = true;
+            LOG("[vk] guest memory import failed at %llx (+%llu MB): shader reads there return zero\n", (unsigned long long)b,
+                (unsigned long long)((e - b) >> 20));
+        }
+    }
+}
+
+// Re-reads the physical mappings and pools when they changed and imports what is new.
 static void gmem_update(void) {
-    if (gmem_off() || kernel_phys_gen() == arena_gen) return;
+    if (gmem_off() || (kernel_phys_gen() == arena_gen && atomic_load(&pool_gen) == pool_gen_seen)) return;
     uint64_t gen, ra[1024], rs[1024];
     int n = kernel_phys_regions(ra, rs, 1024, &gen);
     arena_gen = gen;
+    pool_gen_seen = atomic_load(&pool_gen);
     uint64_t cs = 1ull << maxwell_gmem_chunk_log2;
     int big = -1;
     for (int i = 0; i < n; i++)
@@ -1660,8 +1684,9 @@ static void gmem_update(void) {
         uint64_t b = ra[big] & ~0xFFFFull, e = (ra[big] + rs[big] + 0xFFFF) & ~0xFFFFull;
         if (arenas[1].base != b || arenas[1].size != e - b) {
             int nc = (int)((e - b + cs - 1) / cs);
-            arenas[1] = (typeof(arenas[1])){b, 0, maxwell_gmem_chunks - nc, 0};
-            if (gmem_import_chunks(1, arenas[1].c0, 0, nc, e)) { arenas[1].size = e - b; arenas[1].n = nc; }
+            arenas[1] = (typeof(arenas[1])){b, e - b, maxwell_gmem_chunks - nc, nc};
+            for (int i = arenas[1].c0; i < maxwell_gmem_chunks; i++) if (i >= 0) memset(&gch[i], 0, sizeof gch[i]);
+            gmem_version++;
             LOG("[vk] guest memory arena 1: %llx..%llx (%d chunks)\n", (unsigned long long)b, (unsigned long long)e, nc);
         }
     }
@@ -1671,21 +1696,18 @@ static void gmem_update(void) {
         if (ra[i] < lo) lo = ra[i];
         if (ra[i] + rs[i] > hi) hi = ra[i] + rs[i];
     }
-    if (hi <= lo) return;
-    if (!arenas[0].n) arenas[0].base = lo & ~0xFFFFull;  // (arena 0's base stays: its chunks are only added)
-    if (hi <= arenas[0].base + arenas[0].size) return;
-    uint64_t limit = big >= 0 ? arenas[1].base : ~0ull;  // full chunks, never into arena 1
-    int want = (int)((hi - arenas[0].base + cs - 1) / cs);
-    if (want > maxwell_gmem_chunks - arenas[1].n) want = maxwell_gmem_chunks - arenas[1].n;
-    uint64_t end = arenas[0].base + (uint64_t)want * cs;
-    if (end > limit) end = limit;
-    int have = arenas[0].n;
-    if (have && arenas[0].size < (uint64_t)have * cs) have--;  // (a partial last chunk: imported again, larger)
-    if (gmem_import_chunks(0, 0, have, want, end)) {
-        arenas[0].n = want;
-        arenas[0].size = end - arenas[0].base;
-        LOG("[vk] guest memory arena 0: %llx..%llx (%d chunks)\n", (unsigned long long)arenas[0].base, (unsigned long long)end, want);
+    if (hi > lo) {
+        if (!arenas[0].size) arenas[0].base = lo & ~0xFFFFull;  // (arena 0's base stays: chunks are only added)
+        uint64_t e = (hi + 0xFFFF) & ~0xFFFFull, maxe = arenas[0].base + (uint64_t)(arenas[1].n ? arenas[1].c0 : maxwell_gmem_chunks) * cs;
+        if (e > maxe) e = maxe;
+        if (e > arenas[0].base + arenas[0].size) { arenas[0].size = e - arenas[0].base; gmem_version++; }
     }
+    pthread_mutex_lock(&pools_lock);
+    int np = npools;
+    pthread_mutex_unlock(&pools_lock);
+    for (int i = 0; i < np; i++)
+        for (int a = 0; a < 2; a++)
+            if (arenas[a].size) gmem_import_range(a, pools[i].addr, pools[i].addr + pools[i].size);
 }
 
 // Set GMEM_SET for this submission (made again when the chunks changed).
@@ -1700,12 +1722,12 @@ static VkDescriptorSet gmem_set(void) {
     set_ver = gmem_version;
     static uint32_t zero[64];
     VkSpan zs = vk_transient_copy(zero, sizeof zero, 256);
-    VkDescriptorBufferInfo bi[64];
+    VkDescriptorBufferInfo bi[MAX_GCHUNKS];
     for (int i = 0; i < maxwell_gmem_chunks; i++)
         bi[i] = gch[i].buf ? (VkDescriptorBufferInfo){gch[i].buf, 0, gch[i].size} : (VkDescriptorBufferInfo){zs.buf, zs.off, sizeof zero};
     uint32_t m[12] = {0};
     for (int a = 0; a < 2; a++) {
-        uint64_t b = arenas[a].n ? arenas[a].base : 0, z = arenas[a].n ? arenas[a].size : 0;
+        uint64_t b = arenas[a].size ? arenas[a].base : 0, z = arenas[a].size;
         m[a * 4] = (uint32_t)b; m[a * 4 + 1] = (uint32_t)(b >> 32); m[a * 4 + 2] = (uint32_t)z; m[a * 4 + 3] = (uint32_t)(z >> 32);
     }
     m[8] = (uint32_t)arenas[1].c0;
@@ -1748,11 +1770,14 @@ void vk_exec_reset(void) {
     g_cs_n = 0;
     gcopy_gen++;
     vk_wait_seq(submit_seq);
-    for (int i = 0; i < 64; i++)
+    for (int i = 0; i < MAX_GCHUNKS; i++)
         if (gch[i].buf) { vkDestroyBuffer(g_vk.dev, gch[i].buf, NULL); vkFreeMemory(g_vk.dev, gch[i].mem, NULL); }
     memset(gch, 0, sizeof gch);
     memset(arenas, 0, sizeof arenas);
-    arena_gen = ~0ull;
+    arena_gen = pool_gen_seen = ~0ull;
+    pthread_mutex_lock(&pools_lock);
+    npools = 0;
+    pthread_mutex_unlock(&pools_lock);
     gmem_version++;
     st_defaults();
 }

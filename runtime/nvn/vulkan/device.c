@@ -228,19 +228,19 @@ static void create_device(void) {
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
 
     {   // Ark: shader global memory is imported in chunks the device can bind as one storage buffer each
-        // (exec.c gmem_update; maxwell/shader.h GMEM_SET): the largest power of two within its limits, up to 256 MB
+        // (exec.c gmem_update; maxwell/shader.h GMEM_SET): the largest power of two within its limits, up to 64 MB
         VkPhysicalDeviceMaintenance3Properties m3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES};
         VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &m3};
         vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
         uint64_t lim = p2.properties.limits.maxStorageBufferRange;
         if (m3.maxMemoryAllocationSize && m3.maxMemoryAllocationSize < lim) lim = m3.maxMemoryAllocationSize;
         int lg = 20;
-        while (lg < 28 && (2ull << lg) <= lim) lg++;  // (at most 256 MB: arena 0 is imported in whole chunks)
+        while (lg < 26 && (2ull << lg) <= lim) lg++;  // (at most 64 MB: chunks are imported whole, only where pools are)
         extern int maxwell_gmem_chunk_log2, maxwell_gmem_chunks;
         maxwell_gmem_chunk_log2 = lg;
         int nch = (int)((8ull << 30) >> lg);  // (8 GB of arenas; Legends: Arceus maps about 4.5)
         uint32_t maxsb = p2.properties.limits.maxPerStageDescriptorStorageBuffers;
-        if (nch > 64) nch = 64;
+        if (nch > 128) nch = 128;
         if ((uint32_t)nch > maxsb) nch = (int)maxsb;
         maxwell_gmem_chunks = nch;
         LOG("[vk] shader global memory: %d chunks of %llu MB\n", nch, (unsigned long long)(1ull << (lg - 20)));

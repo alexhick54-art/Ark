@@ -186,6 +186,9 @@ NVN(nvnMemoryPoolInitialize) {
     p->size = G(uint64_t, A(1), 0x18);
     p->flags = G(uint32_t, A(1), 8);
     SET_HOST(A(0), p);
+    backend_pool_created(p->storage, p->size);
+    if (p->size >= (16u << 20)) LOG("[nvn] memory pool %llx +%llu MB (flags %#x)\n", (unsigned long long)p->storage,
+                                    (unsigned long long)(p->size >> 20), p->flags);
     RET(1);
 }
 NVN(nvnMemoryPoolFinalize) { free(HOST(NvnPool, A(0))); SET_HOST(A(0), 0); }
