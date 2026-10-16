@@ -62,6 +62,17 @@ uint64_t plat_now_ns(void) {
     return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
 }
 
+intptr_t plat_thread_clock(void) {
+    clockid_t c;
+    return pthread_getcpuclockid(pthread_self(), &c) == 0 ? (intptr_t)c + 1 : 0;
+}
+
+uint64_t plat_thread_cpu_ns(intptr_t clock) {
+    struct timespec ts;
+    if (!clock || clock_gettime((clockid_t)(clock - 1), &ts)) return 0;
+    return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
+}
+
 void plat_sleep_until_ns(uint64_t t) {
     struct timespec ts = {.tv_sec = (time_t)(t / 1000000000u), .tv_nsec = (long)(t % 1000000000u)};
     while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL) == EINTR) {}

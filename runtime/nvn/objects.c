@@ -593,6 +593,18 @@ static void set_shaders(Cpu *c, int stride) {
         p->stages[stage].const_size = *(const uint32_t *)(control + 0x6FC);
         p->stage_mask |= 1u << stage;
     }
+    if (getenv("ARK_DUMP_CONTROL")) {  // (debug) control sections of each program, for working out their layout
+        static int seq;
+        for (int s = 0; s < 6; s++) {
+            if (!((p->stage_mask >> s) & 1)) continue;
+            char path[128];
+            snprintf(path, sizeof path, "build/ctl_%03d_%llx_s%d_m%x.bin", seq, (unsigned long long)p->stages[s].code_addr, s,
+                     p->stage_mask);
+            FILE *f = fopen(path, "wb");
+            if (f) { fwrite(p->stages[s].control, 1, 0x1000, f); fclose(f); }
+        }
+        seq++;
+    }
     RET(1);
 }
 

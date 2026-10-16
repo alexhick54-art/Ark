@@ -33,6 +33,9 @@ void plat_discard(uint64_t addr, uint64_t size);
 uint64_t plat_now_ns(void);                // monotonic
 void plat_sleep_until_ns(uint64_t t);      // precise wait for plat_now_ns() >= t
 void plat_thread_realtime(uint64_t period_ns);  // periodic timing thread (vsync): don't coalesce its timers
+// CPU time used by a thread: plat_thread_clock() on that thread gives the id plat_thread_cpu_ns() reads (0: unknown)
+intptr_t plat_thread_clock(void);
+uint64_t plat_thread_cpu_ns(intptr_t clock);
 
 // ---- process
 void plat_init(void);                                // first thing in main()

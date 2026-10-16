@@ -74,6 +74,19 @@ int plat_protect(uint64_t addr, uint64_t size, int prot) {
 // ---- time
 static LARGE_INTEGER qpf;
 
+intptr_t plat_thread_clock(void) {
+    HANDLE h = NULL;
+    DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &h, THREAD_QUERY_LIMITED_INFORMATION, FALSE, 0);
+    return (intptr_t)h;
+}
+
+uint64_t plat_thread_cpu_ns(intptr_t clock) {
+    FILETIME c, e, k, u;
+    if (!clock || !GetThreadTimes((HANDLE)clock, &c, &e, &k, &u)) return 0;
+    uint64_t kt = ((uint64_t)k.dwHighDateTime << 32) | k.dwLowDateTime, ut = ((uint64_t)u.dwHighDateTime << 32) | u.dwLowDateTime;
+    return (kt + ut) * 100;  // 100 ns units
+}
+
 uint64_t plat_now_ns(void) {
     if (!qpf.QuadPart) QueryPerformanceFrequency(&qpf);
     LARGE_INTEGER t;

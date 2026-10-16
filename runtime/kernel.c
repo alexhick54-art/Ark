@@ -237,6 +237,7 @@ void rt_unwind_point(void) {
 static void *thread_main(void *arg) {
     KThread *t = arg;
     t_cur = t;
+    t->cpu_clock = plat_thread_clock();
     crash_handler_install();
     rt_set_fpcr(0);
     if (!setjmp(t->unwind)) guest_call(&t->cpu, t->entry);
@@ -604,7 +605,7 @@ static void svc_entry(Cpu *c, uint32_t imm, uint64_t pc) {
         svc_impl(c, imm, pc);
         uint64_t dt = plat_now_ns() - t0;
         static _Atomic int nslow;
-        if (((t_cur && t_cur->id == 80 && (imm == 0x18 || imm == 0x34)) || (dt > 10000000 && imm != 0x0b && imm != 0x1c)) && nslow < 20000) {
+        if (dt > 10000000 && imm != 0x0b && imm != 0x1c && imm != 0x18 && imm != 0x34 && nslow < 2000) {
             nslow++;
             LOG("[slow] t%llu svc%02x %llums a=%llx,%llx,%llx,%llx h0=%x lr=%llx\n", (unsigned long long)(t_cur ? t_cur->id : 0), imm,
                 (unsigned long long)(dt / 1000000), (unsigned long long)a0, (unsigned long long)a1, (unsigned long long)a2, (unsigned long long)a3, h0, (unsigned long long)lr);
@@ -626,6 +627,15 @@ static void svc_entry(Cpu *c, uint32_t imm, uint64_t pc) {
                     }
                 if (any) LOG("\n");
             }
+            // CPU time each guest thread used in the window: next to its svc wait times, whether it computes or waits
+            LOG("[cpuprof]");
+            for (KThread *t = g_threads; t; t = t->anext) {
+                if (!t->started || t->finished || !t->cpu_clock) continue;
+                uint64_t cpu = plat_thread_cpu_ns(t->cpu_clock), d = cpu - t->cpu_seen;
+                t->cpu_seen = cpu;
+                if (d >= 20000000) LOG(" t%llu(%x) %llums", (unsigned long long)(t->id & 31), t->handle, (unsigned long long)(d / 1000000));
+            }
+            LOG("\n");
         }
         return;
     }
