@@ -23,6 +23,7 @@
 #include "shader.h"
 
 uint64_t maxwell_gmem_base, maxwell_gmem_size;
+const XfbLayout *maxwell_xfb;
 int maxwell_gmem_chunk_log2 = 30, maxwell_gmem_chunks = 8;
 const uint8_t *maxwell_dbg_code;
 uint32_t maxwell_dbg_pc;
@@ -1889,6 +1890,41 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         if (info->tex[i].shadow && info->tex[i].type == TEXTYPE_3D) fail(c, "3d shadow texture");
     if (c->fail) { free(body.buf); free(c->body.buf); free(c); return info; }
     int set = stage == STAGE_FRAGMENT ? 1 : 0;
+    // Ark: transform feedback (see XfbLayout): after the shader, store the captured outputs through global memory
+    Str xfb = {0};
+    if (stage == STAGE_VERTEX && key && key->xfb && maxwell_xfb) {
+        const XfbLayout *L = maxwell_xfb;
+        Str src = {0};
+        sp(&src, "  { uint xfi_ = uint(gl_VertexIndex) - xfbq[4].x;\n");
+        for (int b = 0; b < 4; b++) {
+            if (!L->nvar[b] || !L->stride[b]) continue;
+            sp(&src, "    if ((xfbq[%d].x | xfbq[%d].y) != 0u) { ulong xfa_ = (ulong(xfbq[%d].y) << 32 | ulong(xfbq[%d].x)) + ulong(xfi_) * %uul;\n",
+               b, b, b, b, L->stride[b]);
+            uint32_t off = 0;
+            for (int j = 0; j < L->nvar[b]; j++) {
+                int a = L->attr[b][j] - 0x20;
+                for (int k = 0; k < L->ncomp[b][j] && k < 4; k++, off += 4) {
+                    char val[64];
+                    if (a >= 0 && a < 32 && (c->out_attr_mask & (1u << a))) snprintf(val, sizeof val, "floatBitsToUint(v%d[%d])", a, k);
+                    else snprintf(val, sizeof val, "0u");
+                    char addr[64];
+                    snprintf(addr, sizeof addr, "xfa_ + %uul", off);
+                    gmem_open(&src, addr);
+                    Str gb = {0};
+                    sp(&gb, "      if (ok) gmem_.w[uint(ga >> 2)] = %s;\n    }\n", val);
+                    gmem_split(&src, &gb);
+                    free(gb.buf);
+                }
+            }
+            sp(&src, "    }\n");
+        }
+        sp(&src, "  }\n");
+        glsl_rewrite(c, &xfb, src.buf);
+        free(src.buf);
+        info->uses_gmem = true;
+        info->uses_xfb = true;
+        c->uses_gmem_store = true;
+    }
     Str s = {0};
     sp(&s, "%s", glsl_prelude);
     for (int i = 0; i < 18; i++) {
@@ -1911,6 +1947,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         sp(&s, "layout(std140, set = %d, binding = 18) uniform RScale { vec4 rscale[65]; };\n", set);
         info->uses_rscale = true;
     }
+    if (info->uses_xfb) sp(&s, "layout(std140, set = 0, binding = %d) uniform XfbInfo { uvec4 xfbq[5]; };\n", XFB_BINDING);
     bool tint = stage == STAGE_FRAGMENT && !dbg && (c->omap_target & 0x7) == 0x7 && (!key || key->rt_kind[0] == 0);
     if (tint) {
         sp(&s, "layout(std140, set = %d, binding = 19) uniform Tint { vec4 ltint[2]; };\n", set);
@@ -1979,6 +2016,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         sp(&s, "  do {\n%s  } while (false);\n", body.buf ? body.buf : "");
     }
     free(body.buf);
+    if (xfb.buf) { sp(&s, "%s", xfb.buf); free(xfb.buf); }
     if (stage == STAGE_VERTEX) {
         if (key && key->flip_y) sp(&s, "  gl_Position.y = -gl_Position.y;\n");
         if (key && key->depth_minus_one) sp(&s, "  gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5f;\n");

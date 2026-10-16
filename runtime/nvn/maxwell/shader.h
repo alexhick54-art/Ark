@@ -41,7 +41,22 @@ typedef struct {
     bool flip_y;            // lower-left window origin
     uint32_t vs_out_mask;   // fragment: varyings the vertex shader provides
     uint8_t glsl;           // emit Vulkan GLSL (see the contract above) instead of MSL
+    uint8_t xfb;            // vertex: transform feedback is active: also write maxwell_xfb's outputs to memory
 } ShaderKey;
+
+// Ark: transform feedback layout of a vertex program (from its NVN control section). Buffer b holds, per vertex,
+// stride[b] bytes: its nvar[b] varyings packed in order, varying j being ncomp[b][j] components (from .x) of output
+// attribute attr[b][j]. Emulated with global-memory stores at the end of the vertex shader (no
+// VK_EXT_transform_feedback needed): set 0 binding 20 is `uniform XfbInfo { uvec4 xfbq[5]; }`, [b].xy the address
+// where this draw's first vertex goes in buffer b (0: buffer unbound), [4].x the draw's first vertex.
+typedef struct {
+    uint16_t stride[4];
+    uint8_t nvar[4];
+    uint8_t attr[4][32], ncomp[4][32];
+} XfbLayout;
+extern const XfbLayout *maxwell_xfb;  // read by maxwell_translate for keys with xfb set (caller's translate lock)
+#define XFB_BINDING 20
+
 
 typedef struct {
     uint32_t handle_offset;  // byte offset of the texture handle in the bound texture cbuf
@@ -62,6 +77,7 @@ typedef struct {
     uint32_t out_mask;      // vertex: output varyings; fragment: render targets written
     bool writes_depth, uses_discard, writes_point_size;
     bool uses_gmem;         // global memory access: bind the guest heap at GMEM_BUFFER_INDEX
+    bool uses_xfb;          // vertex: writes transform feedback (binding XFB_BINDING)
     bool drops_image_writes;  // SUST / SURED present: storage images aren't bound yet, their writes are dropped
     bool uses_tint;         // fragment: reads the per-draw tint (buffer 19, float4[2]) applied to color target 0
     bool uses_rscale;       // reads the resolution-scale table (fragment/compute buffer 18): float4 [0] = render

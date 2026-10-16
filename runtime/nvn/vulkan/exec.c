@@ -51,6 +51,7 @@ static int cur_sub;
 static uint64_t submit_seq;  // last submitted
 static pthread_mutex_t seq_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool in_pass;
+static bool xfb_pass;  // the open pass is a transform feedback capture's (xfb_begin_pass)
 
 uint64_t vk_completed_seq(void) {
     uint64_t v = 0;
@@ -515,6 +516,10 @@ static struct {
     bool prim_restart;
     uint32_t restart_index;
     uint64_t copy_row_stride, copy_image_stride;
+    // transform feedback (Ark): bound buffers, whether capturing, bytes written per buffer and vertices captured
+    Range xfb_buf[4];
+    bool xfb_active, discard;
+    uint32_t xfb_off[4], xfb_verts;
 } st;
 
 uint32_t nvn_window_origin(void);
@@ -634,6 +639,7 @@ static void vk_end_pass_at(int line) {
     if (prof && line < 4096) prof_end_line[line]++;
     vkCmdEndRendering(vk_cmd());
     in_pass = false;
+    if (xfb_pass) { xfb_pass = false; return; }
     if (g_debug_frame && st.rt.ncolor && st.rt.color[0] && st.rt.color[0]->backend) {
         char path[256];
         static uint64_t debug_pass_frame = ~0ull;
@@ -648,8 +654,28 @@ static void vk_end_pass_at(int line) {
 
 static uint32_t level_extent(uint32_t v, uint32_t lv) { v >>= lv; return v ? v : 1; }
 
+// Ark: transform feedback captures run in a pass with no attachments (their pipelines discard rasterization); a draw
+// after them begins a real pass, whose full barrier makes the captured vertices visible to it.
+static uint32_t xfb_q[5][4];  // XfbInfo of the current capture (see XfbLayout)
+static void xfb_begin_pass(void) {
+    if (in_pass && xfb_pass) return;
+    vk_end_pass();
+    VkCommandBuffer cb = vk_cmd();
+    vk_full_barrier(cb);
+    VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {1, 1}}, .layerCount = 1};
+    vkCmdBeginRendering(cb, &ri);
+    in_pass = true;
+    xfb_pass = true;
+    pass_ncolor = 0;
+    memset(pass_color, 0, sizeof pass_color);
+    pass_depth = pass_stencil = VK_FORMAT_UNDEFINED;
+    pass_samples = 1;
+    pass_w = pass_h = 1;
+    st.rt_dirty = true;  // the next ordinary draw begins its own pass
+}
+
 static void begin_pass(void) {
-    if (in_pass && !st.rt_dirty) return;
+    if (in_pass && !st.rt_dirty && !xfb_pass) return;
     vk_end_pass();
     if (dl_on == 2) renderer_flush();  // (LARECOMP_VK_DEVLOST_TRACE=2: each pass its own submission)
     st.rt_dirty = false;
@@ -928,6 +954,7 @@ typedef struct {
     VkDescriptorSetLayout set_layout[2];
     VkPipelineLayout layout;
     bool vs_uses_vid;
+    XfbLayout xfb;      // (vkey.xfb) the vertex program's transform feedback layout
     _Atomic int state;  // 0 building, 1 ready, 2 failed
 } Prog;
 
@@ -1000,7 +1027,9 @@ static void translate_program(void *arg) {
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
     pthread_mutex_lock(&translate_lock);
+    maxwell_xfb = p->vkey.xfb ? &p->xfb : NULL;
     p->vi = maxwell_translate((const uint8_t *)(uintptr_t)p->code[0], p->cmax[0], STAGE_VERTEX, &p->vkey);
+    maxwell_xfb = NULL;
     if (p->vi->msl && !p->code[1]) {
         // Ark: vertex-only program: a fragment shader that writes nothing (out_mask 0 masks every colour write)
         static ShaderInfo empty_fs;
@@ -1028,6 +1057,37 @@ static void translate_program(void *arg) {
     save_glsl(p->vi->msl, p->code[0], "vs");
     save_glsl(p->fi->msl, p->code[1], "fs");
     run_job(compile_program, p);
+}
+
+// Ark: transform feedback layout from a vertex program's NVN control section (worked out from Legends: Arceus's
+// skinning programs): flag at 0x6ED; per buffer b an enable byte at 0x6E8 + b and a u16 stride at 0x6DC + 2b; varying j
+// of buffer b at 0xDC + 0x80b + 4j (0x20 + k: output attribute k) with its component count at 0x4DC + 0x80b + 4j.
+static bool xfb_program(const uint8_t *control) { return control && control[0x6ED]; }
+static void xfb_layout(const uint8_t *control, XfbLayout *L, uint64_t vs) {
+    memset(L, 0, sizeof *L);
+    if (!xfb_program(control)) return;
+    char desc[256] = "";
+    for (int b = 0; b < 4; b++) {
+        if (!control[0x6E8 + b]) continue;
+        L->stride[b] = *(const uint16_t *)(control + 0x6DC + 2 * b);
+        for (int j = 0; j < 32; j++) {
+            uint32_t id = *(const uint32_t *)(control + 0xDC + 0x80 * b + 4 * j);
+            uint32_t n = *(const uint32_t *)(control + 0x4DC + 0x80 * b + 4 * j);
+            if (!n) break;
+            L->attr[b][j] = (uint8_t)id;
+            L->ncomp[b][j] = (uint8_t)n;
+            L->nvar[b] = (uint8_t)(j + 1);
+            size_t l = strlen(desc);
+            snprintf(desc + l, sizeof desc - l, " b%d:%s%u.%u", b, id >= 0x20 && id < 0x40 ? "a" : "?", id >= 0x20 && id < 0x40 ? id - 0x20 : id, n);
+        }
+        size_t l = strlen(desc);
+        snprintf(desc + l, sizeof desc - l, " (stride %u)", L->stride[b]);
+    }
+    static uint64_t seen[64];
+    static int nseen;
+    bool known = false;
+    for (int i = 0; i < nseen; i++) known |= seen[i] == vs;
+    if (!known && nseen < 64) { seen[nseen++] = vs; LOG("[xfb] vertex program %llx captures%s\n", (unsigned long long)vs, desc); }
 }
 
 #define PROG_TAB 4096
@@ -1066,6 +1126,7 @@ static Prog *get_program(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
     }
     p->vkey = *vkey;
     p->fkey = *fkey;
+    if (vkey->xfb) xfb_layout(np->stages[0].control, &p->xfb, p->code[0]);
     run_translate(translate_program, p);
     return p;
 }
@@ -1257,6 +1318,7 @@ typedef struct {
     uint8_t blend[8][8];
     uint8_t blend_on, a2c, topo_class, poly_fill;
     uint32_t write_mask[8];
+    uint8_t discard;  // rasterizer discard (transform feedback capture)
 } PipeKey;
 
 typedef struct { PipeKey k; uint64_t hash; VkPipeline pipe; _Atomic int state; } Pipe;  // state: 0 building, 1 ready, 2 failed
@@ -1346,7 +1408,8 @@ static void build_pipeline(void *arg) {
                                                  .topology = topo_class_base(k->topo_class)};
     VkPipelineViewportStateCreateInfo vs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
     VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-                                                 .polygonMode = k->poly_fill ? VK_POLYGON_MODE_FILL : VK_POLYGON_MODE_LINE, .lineWidth = 1};
+                                                 .polygonMode = k->poly_fill ? VK_POLYGON_MODE_FILL : VK_POLYGON_MODE_LINE, .lineWidth = 1,
+                                                 .rasterizerDiscardEnable = k->discard};
     VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                                .rasterizationSamples = (VkSampleCountFlagBits)k->samples, .alphaToCoverageEnable = k->a2c};
     VkPipelineDepthStencilStateCreateInfo ds = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
@@ -1877,10 +1940,12 @@ static VkDescriptorSet stage_set(Prog *p, VkDescriptorSetLayout layout, uint32_t
     }
     for (int i = 0; i < p->nbinds; i++) {
         VkBindingInfo *b = &p->binds[i];
-        if (b->set != set || b->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || (b->binding != 18 && b->binding != 19)) continue;
+        if (b->set != set || b->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || (b->binding != 18 && b->binding != 19 && b->binding != XFB_BINDING)) continue;
         w[n] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = b->binding,
                                       .descriptorCount = 1, .descriptorType = b->type};
-        if (b->binding == 18) {
+        if (b->binding == XFB_BINDING) {
+            bi[n] = ubo_span(vk_transient_copy(xfb_q, sizeof xfb_q, 256), sizeof xfb_q);
+        } else if (b->binding == 18) {
             for (int t = 0; t < si->ntex && t < 64; t++) { rs[1 + t][0] = tex_sc[sg][t][0]; rs[1 + t][1] = tex_sc[sg][t][1]; }
             bi[n] = ubo_span(copy_dedupe(sg ? DEDUPE_RSCALE_F : DEDUPE_RSCALE_V, rs, sizeof rs, 256), sizeof rs);
         } else {
@@ -2022,6 +2087,19 @@ static void draw_(CmdRec *r, bool indexed) {
     vkey.depth_minus_one = nvn_depth_mode() == 0;
     for (int i = 0; i < st.nattrib; i++) vkey.attr_kind[i] = (uint8_t)attr_kind(st.attrib[i] & 0xFF);
     for (int i = 0; i < st.rt.ncolor; i++) if (st.rt.color[i]) fkey.rt_kind[i] = (uint8_t)rt_kind(st.rt.color[i]->format);
+    // Ark: transform feedback. A capturing draw runs only its vertex shader (rasterizer discard), in a pass of its own
+    // (xfb_begin_pass), its outputs stored to the bound buffers; with discard on and nothing captured, nothing is drawn.
+    bool xfb_draw = st.xfb_active && (st.program->stage_mask & 1) && xfb_program(st.program->stages[0].control);
+    if (st.discard && !xfb_draw) { stat_skipped++; return; }
+    if (xfb_draw) {
+        vkey.xfb = 1;
+        memset(fkey.rt_kind, 0, sizeof fkey.rt_kind);
+        if (!st.discard || indexed) {
+            static int warned;
+            if (!warned++) LOG("[xfb] captured draw with%s rasterizer discard, %s: only the capture is done\n", st.discard ? "" : "out",
+                               indexed ? "indexed (vertex order assumed)" : "arrays");
+        }
+    }
     Prog *pr = get_program(st.program, &vkey, &fkey);
     if (!pr || atomic_load(&pr->state) != 1) {
         stat_skipped++;
@@ -2055,13 +2133,17 @@ static void draw_(CmdRec *r, bool indexed) {
         if (st.ubuf[0][5].addr) widescreen_scene_ubo((const float *)(uintptr_t)st.ubuf[0][5].addr, st.ubuf[0][5].size);
     }
     if (g_debug_frame) debug_draw(pr, r, indexed);
-    resolve_feedback(pr);
-    snap_reason = "draw-depthwrite";
-    if (st.rt.depth && st.ds[0] && st.ds[1]) snapshots_invalidate(st.rt.depth);
-    snap_reason = "draw-colorwrite";
-    for (int i = 0; i < st.rt.ncolor; i++)
-        if (st.rt.color[i] && ((st.channel_mask >> (i * 4)) & 0xF)) snapshots_invalidate(st.rt.color[i]);
-    begin_pass();
+    if (xfb_draw) {
+        xfb_begin_pass();
+    } else {
+        resolve_feedback(pr);
+        snap_reason = "draw-depthwrite";
+        if (st.rt.depth && st.ds[0] && st.ds[1]) snapshots_invalidate(st.rt.depth);
+        snap_reason = "draw-colorwrite";
+        for (int i = 0; i < st.rt.ncolor; i++)
+            if (st.rt.color[i] && ((st.channel_mask >> (i * 4)) & 0xF)) snapshots_invalidate(st.rt.color[i]);
+        begin_pass();
+    }
     VkCommandBuffer cb = vk_cmd();
 
     uint32_t mode = (uint32_t)r->x[0];
@@ -2122,6 +2204,7 @@ static void draw_(CmdRec *r, bool indexed) {
     k.a2c = st.ms[0xC] != 0;
     k.topo_class = cls;
     k.poly_fill = st.poly[2] != 1;
+    k.discard = xfb_draw;
     uint64_t ph = hash_words(0xcbf29ce484222325ull, &k, sizeof k);
     if (!ph) ph = 1;
     uint32_t pslot = (uint32_t)(ph ^ (ph >> 29)) & (PIPE_TAB - 1);
@@ -2236,6 +2319,25 @@ static void draw_(CmdRec *r, bool indexed) {
     // build the vertex set now and the fragment set after the decision (stage_set fills tex_sc for stage 1).
     if (prof) prof_dyn += SDL_GetTicksNS() - prof_td_;
     PROF_T0();
+    uint32_t xfb_n = 0;  // vertices this draw captures
+    if (xfb_draw) {
+        memset(xfb_q, 0, sizeof xfb_q);
+        xfb_n = (uint32_t)r->x[2];
+        for (int b = 0; b < 4; b++) {
+            if (!st.xfb_buf[b].addr || !pr->xfb.stride[b]) continue;
+            uint64_t a = st.xfb_buf[b].addr + st.xfb_off[b];
+            if (st.xfb_buf[b].size && st.xfb_off[b] + (uint64_t)xfb_n * pr->xfb.stride[b] > st.xfb_buf[b].size) {
+                static int warned;
+                if (warned++ < 4) LOG("[xfb] buffer %d overflow (offset %u + %u x %u > %llu): capture clipped\n", b, st.xfb_off[b], xfb_n,
+                                      pr->xfb.stride[b], (unsigned long long)st.xfb_buf[b].size);
+                uint64_t room = st.xfb_buf[b].size > st.xfb_off[b] ? st.xfb_buf[b].size - st.xfb_off[b] : 0;
+                if (room / pr->xfb.stride[b] < xfb_n) xfb_n = (uint32_t)(room / pr->xfb.stride[b]);
+            }
+            xfb_q[b][0] = (uint32_t)a;
+            xfb_q[b][1] = (uint32_t)(a >> 32);
+        }
+        xfb_q[4][0] = indexed ? 0 : (uint32_t)r->x[1];
+    }
     VkDescriptorSet vset = stage_set(pr, pr->set_layout[0], 0, 0, pr->vi, NULL, NULL, 0, 0, 0, NULL);
     PROF_ADD(prof_sets);
     VkDescriptorImageInfo fii[64];
@@ -2424,6 +2526,10 @@ static void draw_(CmdRec *r, bool indexed) {
         }
         if (!use_index) vkCmdDraw(cb, count, run_n[ri], first, base_inst + run_at[ri]);
         else vkCmdDrawIndexed(cb, icount, run_n[ri], 0, base_vertex, base_inst + run_at[ri]);
+    }
+    if (xfb_draw) {
+        for (int b = 0; b < 4; b++) st.xfb_off[b] += xfb_n * pr->xfb.stride[b];
+        st.xfb_verts += xfb_n;
     }
     stat_draws++;
     cum_draws++;
@@ -3124,6 +3230,43 @@ static void exec_list(uint64_t handle, int depth) {
             break;
         case CMD_DISPATCH: dispatch_compute((uint32_t)r->x[0], (uint32_t)r->x[1], (uint32_t)r->x[2]); break;
         case CMD_DRAW_ARRAYS: draw(r, false); break;
+        case CMD_BIND_XFB_BUFFERS:
+            for (uint64_t i = 0; i < r->x[1] && r->x[0] + i < 4; i++) memcpy(&st.xfb_buf[r->x[0] + i], (uint8_t *)x + i * 16, 16);
+            break;
+        case CMD_SET_RASTERIZER_DISCARD: st.discard = r->x[0] != 0; break;
+        case CMD_XFB_CONTROL: {  // control buffer (ours): u32 bytes written per buffer [0..3], u32 vertices captured [4]
+            uint32_t *ctl = (uint32_t *)(uintptr_t)r->x[0];
+            static int logged;
+            if (logged < 8) {
+                logged++;
+                LOG("[xfb] %s (control %llx) buffers %llx+%llu %llx+%llu %llx+%llu, discard %d\n",
+                    r->x[6] == 0 ? "begin" : r->x[6] == 1 ? "end" : r->x[6] == 2 ? "pause" : "resume", (unsigned long long)r->x[0],
+                    (unsigned long long)st.xfb_buf[0].addr, (unsigned long long)st.xfb_buf[0].size, (unsigned long long)st.xfb_buf[1].addr,
+                    (unsigned long long)st.xfb_buf[1].size, (unsigned long long)st.xfb_buf[2].addr, (unsigned long long)st.xfb_buf[2].size,
+                    st.discard);
+            }
+            if (r->x[6] == 0 || r->x[6] == 3) {  // begin (from offset 0) / resume (from the control buffer)
+                st.xfb_active = true;
+                if (r->x[6] == 3 && ctl) { for (int b = 0; b < 4; b++) st.xfb_off[b] = ctl[b]; st.xfb_verts = ctl[4]; }
+                else { memset(st.xfb_off, 0, sizeof st.xfb_off); st.xfb_verts = 0; }
+            } else {  // end / pause: where each buffer got to
+                st.xfb_active = false;
+                if (ctl) { for (int b = 0; b < 4; b++) ctl[b] = st.xfb_off[b]; ctl[4] = st.xfb_verts; }
+            }
+            break;
+        }
+        case CMD_DRAW_XFB: {  // (mode, control buffer): the vertices a capture produced
+            const uint32_t *ctl = (const uint32_t *)(uintptr_t)r->x[1];
+            uint64_t dbuf[16] = {0};
+            CmdRec *d = (CmdRec *)dbuf;
+            d->op = CMD_DRAW_ARRAYS;
+            d->size = sizeof dbuf;
+            d->x[0] = r->x[0];
+            d->x[2] = ctl ? ctl[4] : 0;
+            d->x[4] = 1;
+            if (d->x[2]) draw(d, false);
+            break;
+        }
         case CMD_DRAW_ELEMENTS: draw(r, true); break;
         case CMD_UPDATE_UNIFORM_BUFFER:
             memcpy((void *)(uintptr_t)(r->x[0] + r->x[2]), x, r->x[3]);

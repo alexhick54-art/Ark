@@ -174,8 +174,14 @@ NVN(nvnCommandBufferBindSeparateTexture) {
 }
 NVN(nvnCommandBufferBindSeparateSamplers) { (void)c; }
 NVN(nvnCommandBufferBindSeparateSampler) { (void)c; }
-NVN(nvnCommandBufferBindTransformFeedbackBuffers) { (void)c; }
-NVN(nvnCommandBufferBindTransformFeedbackBuffer) { (void)c; }
+// (cmd, first, count, const NVNbufferRange*) and (cmd, index, address, size)
+NVN(nvnCommandBufferBindTransformFeedbackBuffers) { record_copy(c, CMD_BIND_XFB_BUFFERS, 3, (uint32_t)A(2) * 16); }
+NVN(nvnCommandBufferBindTransformFeedbackBuffer) {
+    Snap s = snap(c);
+    CmdRec *r = record(c, CMD_BIND_XFB_BUFFERS, 16, &s);
+    r->x[0] = s.x[1]; r->x[1] = 1;
+    memcpy(r->extra, &s.x[2], 16);
+}
 NVN(nvnCommandBufferBindCoverageModulationTable) { (void)c; }
 
 NVN(nvnCommandBufferSetTexturePool) {
@@ -254,7 +260,7 @@ PLAIN(nvnCommandBufferSetSampleMask, CMD_SET_SAMPLE_MASK)
 PLAIN(nvnCommandBufferSetRenderEnable, CMD_SET_RENDER_ENABLE)
 NVN(nvnCommandBufferSetRenderEnableConditional) { (void)c; }
 NVN(nvnCommandBufferSetDepthClamp) { (void)c; }
-NVN(nvnCommandBufferSetRasterizerDiscard) { (void)c; }
+PLAIN(nvnCommandBufferSetRasterizerDiscard, CMD_SET_RASTERIZER_DISCARD)
 NVN(nvnCommandBufferSetConservativeRasterEnable) { (void)c; }
 NVN(nvnCommandBufferSetConservativeRasterDilate) { (void)c; }
 NVN(nvnCommandBufferSetSubpixelPrecisionBias) { (void)c; }
@@ -365,14 +371,16 @@ PLAIN(nvnCommandBufferDrawArraysIndirect, CMD_DRAW_ARRAYS_INDIRECT)
 PLAIN(nvnCommandBufferDrawElementsIndirect, CMD_DRAW_ELEMENTS_INDIRECT)
 NVN(nvnCommandBufferMultiDrawArraysIndirectCount) { (void)c; }
 NVN(nvnCommandBufferMultiDrawElementsIndirectCount) { (void)c; }
-NVN(nvnCommandBufferDrawTransformFeedback) { (void)c; }
+PLAIN(nvnCommandBufferDrawTransformFeedback, CMD_DRAW_XFB)  // (cmd, mode, control buffer)
 NVN(nvnCommandBufferDrawTexture) { (void)c; }
 PLAIN(nvnCommandBufferDispatchCompute, CMD_DISPATCH)
 PLAIN(nvnCommandBufferDispatchComputeIndirect, CMD_DISPATCH_INDIRECT)
-NVN(nvnCommandBufferBeginTransformFeedback) { (void)c; }
-NVN(nvnCommandBufferEndTransformFeedback) { (void)c; }
-NVN(nvnCommandBufferPauseTransformFeedback) { (void)c; }
-NVN(nvnCommandBufferResumeTransformFeedback) { (void)c; }
+// (cmd, control buffer): x[6] = 0 begin, 1 end, 2 pause, 3 resume
+static void xfb_control(Cpu *c, int kind) { Snap s = snap(c); CmdRec *r = record(c, CMD_XFB_CONTROL, 0, &s); r->x[6] = (uint64_t)kind; }
+NVN(nvnCommandBufferBeginTransformFeedback) { xfb_control(c, 0); }
+NVN(nvnCommandBufferEndTransformFeedback) { xfb_control(c, 1); }
+NVN(nvnCommandBufferPauseTransformFeedback) { xfb_control(c, 2); }
+NVN(nvnCommandBufferResumeTransformFeedback) { xfb_control(c, 3); }
 
 // ---- copies
 typedef struct { uint64_t tex; NvnTextureView view; uint8_t has_view; int32_t region[6]; } TexRef;
