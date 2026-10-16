@@ -76,7 +76,8 @@ static LARGE_INTEGER qpf;
 
 intptr_t plat_thread_clock(void) {
     HANDLE h = NULL;
-    DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &h, THREAD_QUERY_LIMITED_INFORMATION, FALSE, 0);
+    DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &h,
+                    THREAD_QUERY_LIMITED_INFORMATION | THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, 0);
     return (intptr_t)h;
 }
 
@@ -85,6 +86,17 @@ uint64_t plat_thread_cpu_ns(intptr_t clock) {
     if (!clock || !GetThreadTimes((HANDLE)clock, &c, &e, &k, &u)) return 0;
     uint64_t kt = ((uint64_t)k.dwHighDateTime << 32) | k.dwLowDateTime, ut = ((uint64_t)u.dwHighDateTime << 32) | u.dwLowDateTime;
     return (kt + ut) * 100;  // 100 ns units
+}
+
+bool plat_thread_pc(intptr_t clock, pthread_t host, uint64_t *pc) {
+    (void)host;
+    HANDLE h = (HANDLE)clock;
+    if (!h || SuspendThread(h) == (DWORD)-1) return false;
+    CONTEXT ctx = {.ContextFlags = CONTEXT_CONTROL};
+    bool ok = GetThreadContext(h, &ctx) != 0;
+    ResumeThread(h);
+    if (ok) *pc = ctx.Rip;
+    return ok;
 }
 
 uint64_t plat_now_ns(void) {

@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <pthread.h>
 
 #ifdef _WIN32
 #include "platform/win_compat.h"
@@ -36,6 +37,8 @@ void plat_thread_realtime(uint64_t period_ns);  // periodic timing thread (vsync
 // CPU time used by a thread: plat_thread_clock() on that thread gives the id plat_thread_cpu_ns() reads (0: unknown)
 intptr_t plat_thread_clock(void);
 uint64_t plat_thread_cpu_ns(intptr_t clock);
+// Where a thread is right now (its host pc), for the sampling profiler (runtime/sampler.c); false if unknown
+bool plat_thread_pc(intptr_t clock, pthread_t host, uint64_t *pc);
 
 // ---- process
 void plat_init(void);                                // first thing in main()

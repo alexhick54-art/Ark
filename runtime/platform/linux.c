@@ -73,6 +73,36 @@ uint64_t plat_thread_cpu_ns(intptr_t clock) {
     return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
 }
 
+static volatile uint64_t sample_pc;
+static volatile int sample_done;
+static void sample_handler(int sig, siginfo_t *si, void *uc) {
+    (void)sig; (void)si;
+    sample_pc = (uint64_t)((ucontext_t *)uc)->uc_mcontext.gregs[REG_RIP];
+    __atomic_store_n(&sample_done, 1, __ATOMIC_RELEASE);
+}
+
+bool plat_thread_pc(intptr_t clock, pthread_t host, uint64_t *pc) {
+    (void)clock;
+    static bool installed;
+    if (!installed) {
+        installed = true;
+        struct sigaction sa = {0};
+        sa.sa_sigaction = sample_handler;
+        sa.sa_flags = SA_SIGINFO | SA_RESTART;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGPROF, &sa, NULL);
+    }
+    __atomic_store_n(&sample_done, 0, __ATOMIC_RELEASE);
+    if (pthread_kill(host, SIGPROF)) return false;
+    for (int i = 0; i < 2000 && !__atomic_load_n(&sample_done, __ATOMIC_ACQUIRE); i++) {
+        struct timespec ts = {0, 2000};
+        nanosleep(&ts, NULL);
+    }
+    if (!__atomic_load_n(&sample_done, __ATOMIC_ACQUIRE)) return false;
+    *pc = sample_pc;
+    return true;
+}
+
 void plat_sleep_until_ns(uint64_t t) {
     struct timespec ts = {.tv_sec = (time_t)(t / 1000000000u), .tv_nsec = (long)(t % 1000000000u)};
     while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL) == EINTR) {}
@@ -169,7 +199,17 @@ void plat_exec(char *const argv[]) {
 // function, so backtrace lines also give the offset in the executable (addr2line -fe lasrecomp <offset>).
 const char *plat_symbol(uint64_t pc, uint64_t *offset) {
     Dl_info di = {0};
-    if (!dladdr((void *)(uintptr_t)pc, &di) || !di.dli_sname) return NULL;
+    if (!dladdr((void *)(uintptr_t)pc, &di)) return NULL;
+    if (!di.dli_sname) {  // a library's unexported code: library+offset
+        Dl_info self = {0};
+        dladdr((void *)plat_symbol, &self);
+        if (!di.dli_fname || di.dli_fbase == self.dli_fbase) return NULL;
+        static __thread char name[256];
+        const char *b = strrchr(di.dli_fname, '/');
+        snprintf(name, sizeof name, "%s", b ? b + 1 : di.dli_fname);
+        if (offset) *offset = pc - (uint64_t)(uintptr_t)di.dli_fbase;
+        return name;
+    }
     if (offset) *offset = pc - (uint64_t)(uintptr_t)di.dli_saddr;
     return di.dli_sname;
 }

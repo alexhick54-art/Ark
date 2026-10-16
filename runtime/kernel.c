@@ -959,6 +959,13 @@ static void dump_waits(int sig) {
 
 void kernel_dump_waits(void) { dump_waits(0); }
 
+int kernel_live_threads(KThread **out, int max) {
+    int n = 0;
+    for (KThread *t = g_threads; t && n < max; t = t->anext)
+        if (t->started && !t->finished && t->cpu_clock) out[n++] = t;
+    return n;
+}
+
 void kernel_init(void) {
 #ifndef _WIN32
     signal(SIGUSR1, dump_waits);

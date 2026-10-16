@@ -170,6 +170,8 @@ int main(int argc, char **argv) {
         pthread_t t;
         pthread_create(&t, NULL, run_limit_thread, &limit);
     }
+    extern void sampler_start(void);
+    sampler_start();
     const char *wd = getenv("ARK_WATCHDOG");
     if (!wd || atoi(wd) != 0) {
         pthread_t w;
