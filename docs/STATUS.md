@@ -9,9 +9,10 @@ Target: Pokémon Legends: Arceus v1.1.1, main build ID `AEE8F150DDA1B5A838806E1A
 **The recompiled game reaches Hisui.** On Linux, through Ark's NVN-on-Vulkan layer (tested on lavapipe): logo,
 first-boot language menu, Arceus's realm with dialogue text, appearance selection, name entry (the swkbd HLE answers
 "Ark"), the cutscene, the title logo, and then the field: Prelude Beach with terrain, sky, buildings, effects and the
-first dialogue ("Are you alive, my boy?!"), around frame 4,300. Characters were missing there (their shaders use
-`LEA`, now implemented). Scripted A presses (`LARECOMP_INPUT`) drive it. The Windows build compiles and links on the
-user's PC; its first run is being debugged.
+first dialogue ("Are you alive, my boy?!"), around frame 4,300. Scripted A presses (`LARECOMP_INPUT`) drive it.
+Characters and Pokémon were invisible everywhere: the game skins them with transform feedback, now emulated (below).
+On Windows (RX 9070 XT) the user plays in the field; it runs at 6-11 fps there, and the renderer's own CPU time is
+small (~35 ms per second), so the cost is in the game's threads (being profiled with `LARECOMP_PROF_SVC`).
 
 | Milestone | State |
 |---|---|
@@ -107,6 +108,15 @@ result. That is the start of milestone 3.
   - vertex / index buffers inside a chunk are bound in place (no per-draw copy).
   - The kernel exposes the mappings (`kernel_phys_regions`, `kernel_phys_gen`); arena 0 grows chunk by chunk.
     Memory cost: imports pin their pages, including the unmapped gaps inside arena 0 (~1 GB).
+- **Transform feedback** (characters, Pokémon): the game skins models by drawing their vertices as points with a
+  vertex-only program, rasterizer discard and transform feedback, then draws the captured buffers. The layout comes
+  from the program's NVN control section (`exec.c xfb_layout`: flag at 0x6ED, per-buffer enables at 0x6E8, u16 strides
+  at 0x6DC, varyings at 0xDC + 0x80 b + 4 j with component counts 0x400 later); a vertex key with `xfb` makes the
+  translator append stores of those outputs through global memory (`XfbInfo`, set 0 binding 20, has each buffer's
+  address for the draw's first vertex). Capture draws run in an attachment-less pass with a discarding pipeline; the
+  next pass's barrier publishes them. Begin/End/Pause/Resume keep per-buffer offsets in the control buffer (Ark's own
+  format), which `DrawTransformFeedback` reads. Vertex-only programs without capture are drawn with an empty fragment
+  shader.
 - **CPU-written textures:** `nvnMemoryPoolFlushMappedRange` / `nvnBufferFlushMappedRange` ranges now mark
   overlapping textures for a full re-hash at their next use (`textures.c backend_pool_written`).
 - **Translator fixes found on the way** (`tools/lifter/gen.py`): jump-table bases resolved along control-flow
@@ -155,7 +165,9 @@ generated GLSL in `build/glsl/`, `ARK_RUN_SECONDS=N` exits after N seconds, and 
    effects (1.9 GB), `Default.pck` (sound), credits. `romfs_field` (`bin\archive\field bin\field\model bin\effect\field`) and `romfs_pokemon`
    (`bin\archive\pokemon bin\appli\res_pokemon`) are requested; battle effects and `Default.pck` after that.
 2. **Storage images:** bind `st.img` as Vulkan storage images and translate `SUST`/`SULD`/`SURED`/`SUATOM`.
-3. **Windows build** on the user's PC (RX 9070 XT): the first run needs real-GPU feedback.
+3. **Speed on Windows**: 6-11 fps in the field with the renderer mostly idle. `LARECOMP_PROF_SVC=1` now logs each
+   guest thread's CPU time beside its svc wait times (`[cpuprof]`, `[svcprof]`), to tell slow game code from threads
+   waiting on each other.
 4. `pl:u` and `ectx:aw` are logging stubs. The game draws its text from its own fonts, so this hasn't mattered yet.
 
 ## Design decisions so far
