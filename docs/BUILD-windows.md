@@ -57,6 +57,12 @@ build/ark.exe game
 
 The log goes to the console. To keep it in a file as well: `build/ark.exe game 2>&1 | tee ark.log`.
 
+Or use the launcher: `make launcher` once, then start `build\ArkLauncher.exe` (from Explorer, or pin it to Start). It
+has the options as checkboxes and lists (60 fps, draw distance, shadows, resolution, texture filtering, mods, game
+settings, and a box for test options), remembers them in `build\ark_launcher.ini`, writes the log to `ark.log` in the
+Ark folder, and says when the game exits. It puts `C:\msys64\ucrt64\bin` on the game's PATH for MSYS2's DLLs (set
+`msys2_bin=` in `ark_launcher.ini` if MSYS2 is elsewhere).
+
 ## Updating
 
 ```

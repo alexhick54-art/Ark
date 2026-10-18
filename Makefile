@@ -6,6 +6,7 @@
 #        DEPS=<prefix>               where SDL3 / Vulkan / shaderc / VMA are, if not system-wide
 #                                    (tools/deps/build_linux_deps.sh builds them)
 #   make mkromfs                     build/mkromfs: RomFS image from a romfs folder
+#   make launcher                    build/ArkLauncher.exe (Windows): pick options and start the game
 #   make test-lift EXEFS=...         differential test of the translator against Unicorn
 EXEFS    ?= exefs
 GEN      ?= generated
@@ -68,7 +69,7 @@ RTFLAGS  := -O1 -g -std=gnu11 $(MFLAGS) $(OSFLAGS) -fno-strict-aliasing -Iruntim
             -Wall -Wno-unused-function -Wno-format
 RT_HDRS  := $(wildcard runtime/*.h runtime/nvn/*.h runtime/nvn/*/*.h) runtime/include/cpu.h
 
-.PHONY: help gen objs rt ark mkromfs test-lift clean
+.PHONY: help gen objs rt ark mkromfs launcher test-lift clean
 help:
 	@echo "Ark build targets (see docs/BUILD-windows.md or README.md):"
 	@echo "  make gen EXEFS=game/exefs   translate the game's code to C (folder with main, sdk, subsdk0, subsdk1)"
@@ -111,6 +112,14 @@ mkromfs: $(B)/mkromfs
 $(B)/mkromfs: tools/mkromfs/mkromfs.c runtime/romfs_build.c
 	@mkdir -p $(dir $@)
 	$(CC) -O2 $(OSFLAGS) -Iruntime -Iruntime/include -o $@ $^
+
+# Windows: a window for picking Ark's options and starting the game (build/ArkLauncher.exe)
+WINDRES ?= windres
+launcher: $(B)/ArkLauncher.exe
+$(B)/ArkLauncher.exe: tools/launcher/launcher.c tools/launcher/launcher.rc tools/launcher/launcher.manifest
+	@mkdir -p $(dir $@)
+	$(WINDRES) -I tools/launcher tools/launcher/launcher.rc -O coff -o $(B)/launcher_res.o
+	$(CC) -O2 -municode -mwindows -o $@ $< $(B)/launcher_res.o -lcomctl32 -lshell32 -lole32 -luser32 -lgdi32
 
 test-lift:
 	cd tools/lifter && $(PY) test_lift.py ../../$(EXEFS)/main 0x7000000000 20000 1
