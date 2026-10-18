@@ -658,7 +658,16 @@ void vk_shaders_init(void);
 
 // exit() from any thread: let the GPU finish, keep the pipeline cache, then end the process without the DLL
 // teardown (driver / validation-layer threads can stall it for minutes while the game's threads still run).
+static int exit_guard(void *a) {  // a GPU wait that never returns must not keep the process (and its memory) alive
+    (void)a;
+    SDL_Delay(3000);
+    fprintf(stderr, "[vk] exit: GPU did not go idle in 3 s; terminating\n");
+    plat_terminate();
+    return 0;
+}
+
 static void quick_exit_handler(void) {
+    SDL_DetachThread(SDL_CreateThread(exit_guard, "exit_guard", NULL));
     static int trace = -1;
     if (trace < 0) trace = getenv("LARECOMP_VK_TRACE") != NULL;
     if (trace) LOG("[vk] exit: waiting for the GPU\n");

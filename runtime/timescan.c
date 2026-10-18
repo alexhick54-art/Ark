@@ -2,7 +2,7 @@
 // presented frame, every float in the game's mapped memory (svcMapPhysicalMemory regions) between 1e-3 and 1e6 is
 // noted; over the next ARK_TIMESCAN_FRAMES (default 4) frames, the ones that change by the same amount every frame
 // stay. Logged: how many advance by each step (1/30 s and 2 frames are the 30 fps leftovers at 60 fps), and the
-// addresses of the first ones for each step. ARK_WATCH=<addr> then names the functions touching one (dispatch.c).
+// addresses of the first ones for each step (all of them in timescan.txt). F10 in the window starts a scan too. ARK_WATCH=<addr> then names the functions touching one (dispatch.c).
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +14,8 @@ typedef struct { uint64_t addr; float last, delta; } Cand;
 static Cand *cand;
 static size_t ncand, capcand;
 static long scan_at = -1;
+static volatile int scan_request;
+void timescan_request(void) { scan_request = 1; }
 static int nframes = 4, step;
 
 static void collect(void) {
@@ -125,6 +127,11 @@ void timescan_frame(uint64_t frame) {
         const char *e = getenv("ARK_TIMESCAN");
         scan_at = e ? atol(e) : 0;
         if (getenv("ARK_TIMESCAN_FRAMES")) nframes = atoi(getenv("ARK_TIMESCAN_FRAMES"));
+    }
+    if (scan_request) {  // F10: scan from the next frame (again, if one ran before)
+        scan_request = 0;
+        scan_at = (long)frame + 1, step = 0;
+        LOG("[timescan] F10: scanning from frame %ld\n", scan_at);
     }
     if (!scan_at || (long)frame < scan_at || step > nframes) return;
     if (step == 0) collect();
