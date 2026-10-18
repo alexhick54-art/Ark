@@ -116,11 +116,10 @@ void timescan_frame(uint64_t frame) {
             armed_at = (long)frame;
             watch_arm();
         }
-        static long auto_at = -1;
-        if (scan_at > 0 && step > nframes && auto_at < 0) auto_at = (long)frame;
-        long since = armed_at >= 0 ? armed_at : auto_at;
+        extern long watch_armed_frame;
+        long since = watch_armed_frame;
         long nwf = getenv("ARK_WATCH_FRAMES") ? atol(getenv("ARK_WATCH_FRAMES")) : 3;
-        if (since >= 0 && (long)frame == since + nwf) { watch_disarm(); LOG("[timescan] watch off\n"); }
+        if (since >= 0 && (long)frame == since + nwf) { watch_armed_frame = -1; watch_disarm(); LOG("[timescan] watch off\n"); }
     }
     if (scan_at < 0) {
         const char *e = getenv("ARK_TIMESCAN");

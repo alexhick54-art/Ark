@@ -266,11 +266,18 @@ void plat_print_backtrace(void) {
 
 static __thread uint64_t watch_reprotect;
 #if defined(__x86_64__)
+int plat_watch_singlestep = 1;
+#else
+int plat_watch_singlestep = 0;
+#endif
+#if defined(__x86_64__)
 static void watch_trap(int sig, siginfo_t *si, void *ctx) {
     (void)sig, (void)si;
     ucontext_t *uc = ctx;
     if (watch_reprotect) {
         extern bool rt_watch_active(void);
+        extern void rt_watch_after(void);
+        rt_watch_after();
         if (rt_watch_active()) mprotect((void *)(uintptr_t)watch_reprotect, PLAT_PAGE, PROT_NONE);
         watch_reprotect = 0;
     }

@@ -12,7 +12,7 @@
 // main+0x39848E0, below) and asks for present interval 2 at main+0x2AA27A8 (skipped there, see
 // objects.c). ARK_60FPS=2: 60 fps with the 1/30 s step kept (the game runs twice as fast).
 int g_ark_60fps;
-static int sites_mask = 47;  // groups 1, 2, 4, 8, 32
+static int sites_mask = 15;
 
 // Run-time alternatives in the translated code (tools/lifter/variants.py): 1/30 s fixed steps in code, 1/60 s at 60 fps.
 // ARK_60FPS_SITES=<mask> picks the groups (default all; 0 none), to narrow down a group that misbehaves.
@@ -47,8 +47,10 @@ void game_patches_apply(void) {
         if (getenv("ARK_60FPS_TABLE2") && atoi(getenv("ARK_60FPS_TABLE2")) && *step2 == 33333334ull) *step2 = 16666667ull;
     }
     LOG("[patch] 60 fps (%s game speed%s)\n", g_ark_60fps == 1 ? "normal" : "double",
-        g_ark_60fps == 1 && sites_mask != 47 ? ", some fixed-step code sites left at 1/30 s" : "");
+        g_ark_60fps == 1 && sites_mask != 15 ? ", some fixed-step code sites left at 1/30 s" : "");
 }
+
+static const char *dpc0(void) { return getenv("ARK_PROBE_DUMP_PC"); }
 
 // Debug: instructions named in ARK_GEN_PROBES when the code was generated call this first. From presented frame
 // ARK_PROBE_AT (default 1), the first ARK_PROBE_N (default 6) visits of each are logged with the registers.
@@ -71,9 +73,22 @@ void ark_probe(Cpu *c, uint64_t pc) {
     double d[4];
     float f[4];
     for (int k = 0; k < 4; k++) { uint64_t lo = (uint64_t)c->v[k]; memcpy(&d[k], &lo, 8); memcpy(&f[k], &lo, 4); }
-    LOG("[probe] %llx frame %llu x0 %llx x1 %llx x8 %llx x9 %llx x19 %llx x20 %llx lr %llx | v0 %llx (%g) v1 %llx v2 %llx v3 %llx v4 %llx\n",
+    {   // ARK_PROBE_WATCH=<reg>:<hex off>: watch x<reg>+off of the first ARK_PROBE_WATCH_N (8) visits, then arm
+        static int nw;
+        const char *pw = getenv("ARK_PROBE_WATCH");
+        int maxw = getenv("ARK_PROBE_WATCH_N") ? atoi(getenv("ARK_PROBE_WATCH_N")) : 8;
+        if (pw && nw < maxw && (!dpc0() || strtoull(dpc0(), NULL, 16) == pc)) {
+            extern void watch_add(uint64_t, uint64_t), watch_arm(void);
+            char *e;
+            int r = (int)strtol(pw, &e, 10);
+            uint64_t a = c->x[r & 31] + (*e == ':' ? strtoull(e + 1, NULL, 16) : 0);
+            watch_add(a, a + 4);
+            if (++nw == maxw) watch_arm();
+        }
+    }
+    LOG("[probe] %llx frame %llu x0 %llx x1 %llx x2 %llx x3 %llx x8 %llx x9 %llx x19 %llx x20 %llx lr %llx | v0 %llx (%g) v1 %llx v2 %llx v3 %llx v4 %llx\n",
         (unsigned long long)pc, (unsigned long long)renderer_present_count(), (unsigned long long)c->x[0],
-        (unsigned long long)c->x[1], (unsigned long long)c->x[8], (unsigned long long)c->x[9],
+        (unsigned long long)c->x[1], (unsigned long long)c->x[2], (unsigned long long)c->x[3], (unsigned long long)c->x[8], (unsigned long long)c->x[9],
         (unsigned long long)c->x[19], (unsigned long long)c->x[20], (unsigned long long)c->x[30],
         (unsigned long long)(uint64_t)c->v[0], d[0], (unsigned long long)(uint64_t)c->v[1],
         (unsigned long long)(uint64_t)c->v[2], (unsigned long long)(uint64_t)c->v[3],

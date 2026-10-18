@@ -2,6 +2,8 @@
 #include <windows.h>
 #include <fcntl.h>
 #include <stdio.h>
+
+int plat_watch_singlestep = 0;  // (debug watchpoints: the watch thread re-closes pages instead)
 #include <stdlib.h>
 #include <string.h>
 #include <shellapi.h>

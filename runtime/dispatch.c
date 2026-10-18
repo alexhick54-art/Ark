@@ -267,8 +267,12 @@ static struct { uint64_t lo, hi; } watches[MAX_WATCH];
 static uint64_t watch_pages[MAX_WATCH];
 static int nwatch, nwpage;
 static volatile int watch_on, watch_done;
+long watch_armed_frame = -1;  // presented frame when armed (timescan.c turns it off ARK_WATCH_FRAMES later)
 static void *watch_thread(void *a) {
     (void)a;
+    extern int plat_watch_singlestep;  // the platform closes the page again after each access
+    for (int i = 0; i < nwpage && plat_watch_singlestep; i++) plat_protect(watch_pages[i], PLAT_PAGE, PLAT_PROT_NONE);
+    while (watch_on && plat_watch_singlestep) usleep(1000);
     while (watch_on) {
         for (int i = 0; i < nwpage; i++) {
             int r = plat_protect(watch_pages[i], PLAT_PAGE, PLAT_PROT_NONE);
@@ -290,6 +294,8 @@ void watch_add(uint64_t lo, uint64_t hi) {
 void watch_arm(void) {
     if (!nwpage || watch_on || watch_done) return;
     watch_on = 1;
+    extern uint64_t renderer_present_count(void);
+    watch_armed_frame = (long)renderer_present_count();
     fprintf(stderr, "[watch] %d ranges on %d pages\n", nwatch, nwpage);
     for (int i = 0; i < nwatch; i++) fprintf(stderr, "[watch]  %llx..%llx\n", (unsigned long long)watches[i].lo, (unsigned long long)watches[i].hi);
     pthread_t t;
@@ -298,13 +304,41 @@ void watch_arm(void) {
 bool rt_watch_active(void) { return watch_on; }
 void watch_disarm(void) { watch_on = 0, watch_done = 1; }
 
+// After the single step (platform trap handler), rt_watch_after() compares the range: a change is logged as a write.
+static __thread int pend_w = -1;
+static __thread uint32_t pend_old;
+static __thread uint64_t pend_pc;
+void rt_watch_after(void) {
+    if (pend_w < 0) return;
+    int w = pend_w;
+    pend_w = -1;
+    uint32_t now;
+    plat_protect(watches[w].lo & ~(uint64_t)(PLAT_PAGE - 1), PLAT_PAGE, PLAT_PROT_RW);  // (another thread may have closed it)
+    memcpy(&now, (const void *)(uintptr_t)watches[w].lo, 4);
+    if (now == pend_old) return;
+    static struct { int w; uint64_t pc; } seen[512];
+    static int nseen;
+    for (int i = 0; i < nseen; i++) if (seen[i].w == w && seen[i].pc == pend_pc) return;
+    if (nseen < 512) seen[nseen].w = w, seen[nseen++].pc = pend_pc;
+    uint64_t off = 0;
+    const char *nm = host_sym(pend_pc, &off);
+    float a, b;
+    memcpy(&a, &pend_old, 4), memcpy(&b, &now, 4);
+    fprintf(stderr, "[watch] %llx WRITE by %s+%#llx: %g -> %g\n", (unsigned long long)watches[w].lo, nm ? nm : "?",
+            (unsigned long long)off, a, b);
+}
+
 bool rt_fault_watch(uint64_t fa, uint64_t pc) {
     uint64_t pg = fa & ~(uint64_t)(PLAT_PAGE - 1);
     int p = 0;
     while (p < nwpage && watch_pages[p] != pg) p++;
     if (p == nwpage) return false;
+    plat_protect(pg, PLAT_PAGE, PLAT_PROT_RW);
+    pend_w = -1;
     for (int w = 0; w < nwatch; w++) {
         if (fa < watches[w].lo || fa >= watches[w].hi) continue;
+        pend_w = w, pend_pc = pc;
+        memcpy(&pend_old, (const void *)(uintptr_t)watches[w].lo, 4);
         static struct { int w; char nm[48]; } seen[512];
         static int nseen;
         const char *nm = host_sym(pc, NULL);
@@ -318,7 +352,6 @@ bool rt_fault_watch(uint64_t fa, uint64_t pc) {
                     (unsigned long long)(fa - watches[w].lo), nm);
         }
     }
-    plat_protect(pg, PLAT_PAGE, PLAT_PROT_RW);
     return true;
 }
 
