@@ -34,6 +34,7 @@ static const wchar_t *SHADOW_ITEMS[] = {L"Game default (1024)", L"2x (2048)", L"
 static const wchar_t *SCALE_ITEMS[] = {L"1", L"1.5", L"2", L"0.75", L"0.5"};
 static const wchar_t *ANISO_ITEMS[] = {L"Off", L"2x", L"4x", L"8x", L"16x"};
 static const wchar_t *BIAS_ITEMS[] = {L"0", L"-0.5", L"-1"};
+static const wchar_t *TERRAIN_ITEMS[] = {L"Auto (x4 with distance 3)", L"Game (40 m)", L"x2 (80 m)", L"x4 (160 m)", L"x6 (240 m)"};
 static const wchar_t *LOD0_ITEMS[] = {L"With draw distance 3", L"Always", L"Never"};
 
 // right column: on/off options, each one environment variable (or a bit of ARK_60FPS_SITES)
@@ -51,7 +52,7 @@ static Check checks[] = {
     {L"Hottest game functions in the log (every 10 s)", L"sample", L"LARECOMP_SAMPLE", L"10", 0, 0},
     {L"Log every file the game opens", L"logopen", L"ARK_LOG_OPEN", L"1", 0, 0},
 };
-static HWND h_lod0;
+static HWND h_lod0, h_terrain;
 
 static int S(int v) { return MulDiv(v, dpi, 96); }
 
@@ -109,6 +110,7 @@ static void save_all(void) {
     save_text(L"config", h_config);
     save_text(L"extra", h_extra);
     save_int(L"lod0", sel(h_lod0));
+    save_int(L"terrain", sel(h_terrain));
     for (int i = 0; i < N(checks); i++) save_int(checks[i].key, (int)SendMessageW(checks[i].h, BM_GETCHECK, 0, 0));
 }
 static void load_all(void) {
@@ -124,6 +126,7 @@ static void load_all(void) {
     load_text(L"config", h_config, L"");
     load_text(L"extra", h_extra, L"");
     SendMessageW(h_lod0, CB_SETCURSEL, GetPrivateProfileIntW(L"ark", L"lod0", 0, ini), 0);
+    SendMessageW(h_terrain, CB_SETCURSEL, GetPrivateProfileIntW(L"ark", L"terrain", 0, ini), 0);
     for (int i = 0; i < N(checks); i++)
         SendMessageW(checks[i].h, BM_SETCHECK, GetPrivateProfileIntW(L"ark", checks[i].key, checks[i].def, ini), 0);
 }
@@ -166,6 +169,8 @@ static void launch(void) {
     env(L"ARK_TEX_LOD_BIAS", wcscmp(b, L"0") ? b : NULL);
     get_text(h_mods, b, MAX_PATH);
     env(L"ARK_MODS", b);
+    static const wchar_t *terrain[] = {NULL, L"1", L"2", L"4", L"6"};
+    env(L"ARK_TERRAIN_RANGE", terrain[sel(h_terrain) < 0 ? 0 : sel(h_terrain)]);
     int l0 = sel(h_lod0);
     env(L"ARK_LOD0", l0 == 1 ? L"1" : l0 == 2 ? L"0" : NULL);
     int mask = 0, all = 0;
@@ -267,7 +272,8 @@ static void build_ui(void) {
     h_aniso = combo(ANISO_ITEMS, N(ANISO_ITEMS), 428, y, 160, ID_ANISO, false); y += 32;
     label(L"Texture mip bias", 24, y, 140);
     h_bias = combo(BIAS_ITEMS, N(BIAS_ITEMS), 170, y, 120, ID_BIAS, true);
-    label(L"(negative = sharper far textures)", 310, y, 280); y += 40;
+    label(L"Terrain detail", 310, y, 110);
+    h_terrain = combo(TERRAIN_ITEMS, N(TERRAIN_ITEMS), 428, y, 160, 301, false); y += 40;
 
     heading(L"Mods and testing", y); y += 26;
     label(L"Mods folder", 24, y, 140);
@@ -307,7 +313,7 @@ static void build_ui(void) {
     y += 12;
     heading_at(L"Keys in the game window", x, y); y += 24;
     static const wchar_t *keys[] = {L"F2  60 fps on / off", L"F3  full-detail models", L"F4  grass to its limit",
-                                    L"F5  dialogue text pace", L"F6  second frame table halved", L"F9  frame dump",
+                                    L"F5  dialogue text pace", L"F6  second frame table halved", L"F7  terrain detail range", L"F9  frame dump",
                                     L"F10  timing scan", L"F11  fullscreen",
                                     L"(the title bar shows which are on)"};
     for (int k = 0; k < N(keys); k++, y += 20) label(keys[k], x + 8, y, 320);
@@ -338,6 +344,7 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM w, LPARAM l) {
             SetWindowTextW(h_config, L"");
             SetWindowTextW(h_extra, L"");
             SendMessageW(h_lod0, CB_SETCURSEL, 0, 0);
+            SendMessageW(h_terrain, CB_SETCURSEL, 0, 0);
             for (int i = 0; i < N(checks); i++) SendMessageW(checks[i].h, BM_SETCHECK, checks[i].def, 0);
             return 0;
         }
@@ -390,7 +397,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show) {
     font = CreateFontW(-S(14), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
     font_bold = CreateFontW(-S(15), 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
 
-    RECT r = {0, 0, S(968), S(668)};
+    RECT r = {0, 0, S(968), S(688)};
     DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     AdjustWindowRect(&r, style, FALSE);
     wnd = CreateWindowW(L"ArkLauncher", L"Ark Launcher", style, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left,

@@ -124,6 +124,27 @@ void ark_probe(Cpu *c, uint64_t pc) {
     }
 }
 
+// ---- terrain detail range (tools/lifter/patches.py, main+0x24713C4): the distance within which terrain patches are
+// split into finer ones (40 m) times this factor. ARK_TERRAIN_RANGE=<f> (default 4 with ARK_LOD=3, else 1); F7 cycles it.
+static float terrain_factor = -1;
+static void terrain_factor_init(void) {
+    if (terrain_factor >= 0) return;
+    const char *e = getenv("ARK_TERRAIN_RANGE");
+    terrain_factor = e ? (float)atof(e) : (getenv("ARK_LOD") && atoi(getenv("ARK_LOD")) >= 3) ? 4.0f : 1.0f;
+    if (terrain_factor < 0.25f) terrain_factor = 0.25f;
+    if (terrain_factor > 16) terrain_factor = 16;
+}
+void ark_terrain_range(Cpu *c) {
+    terrain_factor_init();
+    uint32_t w = (uint32_t)c->v[5];
+    float f;
+    memcpy(&f, &w, 4);
+    f *= terrain_factor;
+    memcpy(&w, &f, 4);
+    c->v[5] = w;
+}
+float ark_terrain_factor(void) { terrain_factor_init(); return terrain_factor; }
+
 // ---- run-time switches (runtime/hotkeys.c: F2..F5 in the game window; the title bar shows them)
 static int table2_half;
 static bool frame_tables_ok(void) {
@@ -154,6 +175,15 @@ void ark_switch_toggle(int which) {
     case 1: force_lod0 = !force_lod0; break;
     case 2: grass_far = !grass_far; break;
     case 3: sites_mask ^= 64; break;
+    case 5: {
+        terrain_factor_init();
+        static const float steps[] = {1, 2, 4, 6};
+        int i = 0;
+        while (i < 4 && steps[i] <= terrain_factor + 0.01f) i++;
+        terrain_factor = steps[i % 4];
+        LOG("[switch] terrain detail range x%g (%g m)\n", terrain_factor, 40 * terrain_factor);
+        return;
+    }
     case 4:
         table2_half = !ark_switch_get(4);
         *step2 = table2_half && g_ark_60fps ? 16666667ull : 33333334ull;
