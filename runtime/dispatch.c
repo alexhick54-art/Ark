@@ -260,39 +260,59 @@ void rt_brk(Cpu *c, uint32_t imm, uint64_t pc) {
 
 // ---- crash reporting
 
-// Debug data watchpoint: the page is protected; accesses in [lo, hi) are attributed to the host
-// function (f_<guest addr>) doing them, then the page is reopened until the next re-arm.
-uint64_t g_watch_lo, g_watch_hi;
-static uint64_t watch_page;
+// Debug data watchpoints: the pages are protected; accesses inside a watched range are attributed to the host
+// function (f_<guest addr>) doing them, then the page is reopened until the watch thread closes it again.
+#define MAX_WATCH 32
+static struct { uint64_t lo, hi; } watches[MAX_WATCH];
+static uint64_t watch_pages[MAX_WATCH];
+static int nwatch, nwpage;
+static volatile int watch_on;
 static void *watch_thread(void *a) {
     (void)a;
-    int r = plat_protect(watch_page, PLAT_PAGE, PLAT_PROT_NONE);
-    fprintf(stderr, "[watch] page %llx protect -> %d\n", (unsigned long long)watch_page, r);
-    for (;;) { plat_protect(watch_page, PLAT_PAGE, PLAT_PROT_NONE); usleep(100); }
+    while (watch_on) {
+        for (int i = 0; i < nwpage; i++) plat_protect(watch_pages[i], PLAT_PAGE, PLAT_PROT_NONE);
+        usleep(100);
+    }
+    for (int i = 0; i < nwpage; i++) plat_protect(watch_pages[i], PLAT_PAGE, PLAT_PROT_RW);
     return NULL;
 }
+void watch_add(uint64_t lo, uint64_t hi) {
+    if (watch_on || nwatch == MAX_WATCH) return;
+    watches[nwatch].lo = lo, watches[nwatch].hi = hi, nwatch++;
+    uint64_t pg = lo & ~(uint64_t)(PLAT_PAGE - 1);
+    for (int i = 0; i < nwpage; i++) if (watch_pages[i] == pg) return;
+    watch_pages[nwpage++] = pg;
+}
 void watch_arm(void) {
-    if (!g_watch_lo || watch_page) return;
-    watch_page = g_watch_lo & ~(PLAT_PAGE - 1);
+    if (!nwpage || watch_on) return;
+    watch_on = 1;
+    fprintf(stderr, "[watch] %d ranges on %d pages\n", nwatch, nwpage);
     pthread_t t;
     pthread_create(&t, NULL, watch_thread, NULL);
 }
+void watch_disarm(void) { watch_on = 0; }
 
 bool rt_fault_watch(uint64_t fa, uint64_t pc) {
-    if (!watch_page || fa < watch_page || fa >= watch_page + PLAT_PAGE) return false;
-    if (fa >= g_watch_lo && fa < g_watch_hi) {
-        static char seen[64][48];
+    uint64_t pg = fa & ~(uint64_t)(PLAT_PAGE - 1);
+    int p = 0;
+    while (p < nwpage && watch_pages[p] != pg) p++;
+    if (p == nwpage) return false;
+    for (int w = 0; w < nwatch; w++) {
+        if (fa < watches[w].lo || fa >= watches[w].hi) continue;
+        static struct { int w; char nm[48]; } seen[512];
         static int nseen;
         const char *nm = host_sym(pc, NULL);
         if (!nm) nm = "?";
         bool found = false;
-        for (int i = 0; i < nseen; i++) found |= !strcmp(seen[i], nm);
-        if (!found && nseen < 64) {
-            snprintf(seen[nseen++], 48, "%s", nm);
-            fprintf(stderr, "[watch] +%#llx by %s\n", fa - g_watch_lo, nm);
+        for (int i = 0; i < nseen && !found; i++) found = seen[i].w == w && !strcmp(seen[i].nm, nm);
+        if (!found && nseen < 512) {
+            seen[nseen].w = w;
+            snprintf(seen[nseen++].nm, 48, "%s", nm);
+            fprintf(stderr, "[watch] %llx+%#llx by %s\n", (unsigned long long)watches[w].lo,
+                    (unsigned long long)(fa - watches[w].lo), nm);
         }
     }
-    plat_protect(watch_page, PLAT_PAGE, PLAT_PROT_RW);
+    plat_protect(pg, PLAT_PAGE, PLAT_PROT_RW);
     return true;
 }
 

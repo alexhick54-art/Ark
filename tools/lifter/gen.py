@@ -57,6 +57,11 @@ class Module:
             a = base + off
             if self.in_text(a) and self.word(a) == orig:
                 self.variants[a] = (alt, group)
+        # Debug: ARK_GEN_PROBES="main:2b90028,27a0be8;sdk:..." calls ark_probe (runtime/patches.c) before those instructions
+        self.probes = set()
+        for part in os.environ.get('ARK_GEN_PROBES', '').split(';'):
+            if part.startswith(name + ':'):
+                self.probes |= {base + int(x, 16) for x in part[len(name) + 1:].split(',') if x}
 
     def in_text(self, a):
         return self.lo <= a < self.hi and a % 4 == 0
@@ -570,6 +575,9 @@ class Module:
                 out.append('    else { ' + ' '.join(self.render_single(ins, a, jump, refs)) + ' } }')
                 last = 'op'
                 continue
+            if a in self.probes:
+                flush()
+                out.append(f'    {{ extern void ark_probe(Cpu *, uint64_t); ark_probe(c, {hx(a)}); }}')
             if a in self.variants:  # Ark: run-time alternative (variants.py): ark_variant(group) picks
                 alt, group = self.variants[a]
                 flush()

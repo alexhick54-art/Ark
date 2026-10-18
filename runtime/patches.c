@@ -3,6 +3,7 @@
 // code is compiled, so code changes are made where the runtime sees them (nvnWindowSetPresentInterval).
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "rt.h"
 
@@ -45,4 +46,31 @@ void game_patches_apply(void) {
     }
     LOG("[patch] 60 fps (%s game speed%s)\n", g_ark_60fps == 1 ? "normal" : "double",
         g_ark_60fps == 1 && sites_mask != 15 ? ", some fixed-step code sites left at 1/30 s" : "");
+}
+
+// Debug: instructions named in ARK_GEN_PROBES when the code was generated call this first. From presented frame
+// ARK_PROBE_AT (default 1), the first ARK_PROBE_N (default 6) visits of each are logged with the registers.
+void ark_probe(Cpu *c, uint64_t pc) {
+    extern uint64_t renderer_present_count(void);
+    static long at = -1, maxn;
+    static struct { uint64_t pc; long n; } seen[64];
+    static int nseen;
+    if (at < 0) {
+        at = getenv("ARK_PROBE_AT") ? atol(getenv("ARK_PROBE_AT")) : 1;
+        maxn = getenv("ARK_PROBE_N") ? atol(getenv("ARK_PROBE_N")) : 6;
+    }
+    if ((long)renderer_present_count() < at) return;
+    int i = 0;
+    while (i < nseen && seen[i].pc != pc) i++;
+    if (i == nseen) { if (nseen == 64) return; seen[nseen++].pc = pc; }
+    if (seen[i].n++ >= maxn) return;
+    double d[4];
+    float f[4];
+    for (int k = 0; k < 4; k++) { uint64_t lo = (uint64_t)c->v[k]; memcpy(&d[k], &lo, 8); memcpy(&f[k], &lo, 4); }
+    LOG("[probe] %llx frame %llu x0 %llx x1 %llx x8 %llx x9 %llx x19 %llx x20 %llx lr %llx | v0 %llx (%g) v1 %llx v2 %llx v3 %llx\n",
+        (unsigned long long)pc, (unsigned long long)renderer_present_count(), (unsigned long long)c->x[0],
+        (unsigned long long)c->x[1], (unsigned long long)c->x[8], (unsigned long long)c->x[9],
+        (unsigned long long)c->x[19], (unsigned long long)c->x[20], (unsigned long long)c->x[30],
+        (unsigned long long)(uint64_t)c->v[0], d[0], (unsigned long long)(uint64_t)c->v[1],
+        (unsigned long long)(uint64_t)c->v[2], (unsigned long long)(uint64_t)c->v[3]);
 }

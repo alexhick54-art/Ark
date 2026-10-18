@@ -382,13 +382,15 @@ static void fill_state(Cpu *c) {
     if (nlog < 6 && (sampling % 600) == 1) { nlog++; LOG("[input] GetNpadState id %#x lr %llx\n", id, c->x[30]); }
     if (id != 0) return;  // docked: only player 1 (FullKey); Handheld stays disconnected
     // (LAS Recomp ran its randomizer features' per-frame ticks here; Ark has none.)
-    extern uint64_t g_watch_lo, g_watch_hi;
+    extern void watch_add(uint64_t, uint64_t), watch_arm(void);
+    static bool pad_watched;
     if (id == 0 && !g_pad_obj) g_pad_obj = c->x[1] - 8;
-    if (id == 0 && !g_watch_lo && getenv("LARECOMP_WATCH_PAD")) {
+    if (id == 0 && !pad_watched && getenv("LARECOMP_WATCH_PAD")) {
         unsigned lo = 0x98 + 0x10, hi = 0x98 + 0x48;  // offsets from the controller manager
         sscanf(getenv("LARECOMP_WATCH_PAD"), "%x,%x", &lo, &hi);
-        g_watch_lo = c->x[1] - 8 - 0x98 + lo;
-        g_watch_hi = c->x[1] - 8 - 0x98 + hi;
+        pad_watched = true;
+        watch_add(c->x[1] - 8 - 0x98 + lo, c->x[1] - 8 - 0x98 + hi);
+        watch_arm();
         LOG("[input] watching controller object %llx\n", c->x[1] - 8);
     }
     bool menu = menu_input_captured();  // the overlay menu / name entry has the controls (typing there isn't for the game)
