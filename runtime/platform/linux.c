@@ -264,6 +264,20 @@ void plat_print_backtrace(void) {
     }
 }
 
+static __thread uint64_t watch_reprotect;
+#if defined(__x86_64__)
+static void watch_trap(int sig, siginfo_t *si, void *ctx) {
+    (void)sig, (void)si;
+    ucontext_t *uc = ctx;
+    if (watch_reprotect) {
+        extern bool rt_watch_active(void);
+        if (rt_watch_active()) mprotect((void *)(uintptr_t)watch_reprotect, PLAT_PAGE, PROT_NONE);
+        watch_reprotect = 0;
+    }
+    uc->uc_mcontext.gregs[REG_EFL] &= ~0x100ll;
+}
+#endif
+
 static void crash_handler(int sig, siginfo_t *si, void *ctx) {
     ucontext_t *uc = ctx;
     static volatile int depth;
@@ -276,7 +290,14 @@ static void crash_handler(int sig, siginfo_t *si, void *ctx) {
     uint64_t pc = (uint64_t)uc->uc_mcontext.gregs[REG_RIP], sp = (uint64_t)uc->uc_mcontext.gregs[REG_RSP], lr = 0;
     if (sig != SIGSEGV || (fa & ~0xFFFull) != (sp & ~0xFFFull)) lr = *(uint64_t *)(uintptr_t)sp;
 #endif
-    if (rt_fault_watch(fa, pc)) return;
+    if (sig == SIGSEGV && rt_fault_watch(fa, pc)) {
+#if defined(__x86_64__)
+        // debug watchpoint: let this one instruction through, then close the page again (watch_trap)
+        watch_reprotect = fa & ~(PLAT_PAGE - 1);
+        uc->uc_mcontext.gregs[REG_EFL] |= 0x100;
+#endif
+        return;
+    }
     char what[32];
     snprintf(what, sizeof what, "signal %d", sig);
     rt_fault_report(what, fa, pc, lr);
@@ -293,6 +314,10 @@ void plat_crash_handler_install(void) {
     sigaction(SIGILL, &sa, NULL);
     sigaction(SIGFPE, &sa, NULL);
     sigaction(SIGABRT, &sa, NULL);
+#if defined(__x86_64__)
+    sa.sa_sigaction = watch_trap;
+    sigaction(SIGTRAP, &sa, NULL);
+#endif
 }
 
 // ---- child processes

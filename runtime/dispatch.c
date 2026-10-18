@@ -266,11 +266,15 @@ void rt_brk(Cpu *c, uint32_t imm, uint64_t pc) {
 static struct { uint64_t lo, hi; } watches[MAX_WATCH];
 static uint64_t watch_pages[MAX_WATCH];
 static int nwatch, nwpage;
-static volatile int watch_on;
+static volatile int watch_on, watch_done;
 static void *watch_thread(void *a) {
     (void)a;
     while (watch_on) {
-        for (int i = 0; i < nwpage; i++) plat_protect(watch_pages[i], PLAT_PAGE, PLAT_PROT_NONE);
+        for (int i = 0; i < nwpage; i++) {
+            int r = plat_protect(watch_pages[i], PLAT_PAGE, PLAT_PROT_NONE);
+            static int nerr;
+            if (r && nerr++ < 4) fprintf(stderr, "[watch] protect %llx failed\n", (unsigned long long)watch_pages[i]);
+        }
         usleep(100);
     }
     for (int i = 0; i < nwpage; i++) plat_protect(watch_pages[i], PLAT_PAGE, PLAT_PROT_RW);
@@ -284,13 +288,15 @@ void watch_add(uint64_t lo, uint64_t hi) {
     watch_pages[nwpage++] = pg;
 }
 void watch_arm(void) {
-    if (!nwpage || watch_on) return;
+    if (!nwpage || watch_on || watch_done) return;
     watch_on = 1;
     fprintf(stderr, "[watch] %d ranges on %d pages\n", nwatch, nwpage);
+    for (int i = 0; i < nwatch; i++) fprintf(stderr, "[watch]  %llx..%llx\n", (unsigned long long)watches[i].lo, (unsigned long long)watches[i].hi);
     pthread_t t;
     pthread_create(&t, NULL, watch_thread, NULL);
 }
-void watch_disarm(void) { watch_on = 0; }
+bool rt_watch_active(void) { return watch_on; }
+void watch_disarm(void) { watch_on = 0, watch_done = 1; }
 
 bool rt_fault_watch(uint64_t fa, uint64_t pc) {
     uint64_t pg = fa & ~(uint64_t)(PLAT_PAGE - 1);

@@ -9,7 +9,7 @@
 
 // ARK_60FPS=1: 60 fps at normal game speed. The game steps its simulation by a fixed frame time in nanoseconds
 // (main+0x397E8D8, 33,333,334 = 1/30 s, in a table of frame times for present intervals 1..5; a second copy at
-// main+0x39848E0 serves other systems) and asks for present interval 2 at main+0x2AA27A8 (skipped there, see
+// main+0x39848E0, below) and asks for present interval 2 at main+0x2AA27A8 (skipped there, see
 // objects.c). ARK_60FPS=2: 60 fps with the 1/30 s step kept (the game runs twice as fast).
 int g_ark_60fps;
 static int sites_mask = 15;
@@ -37,12 +37,14 @@ void game_patches_apply(void) {
         g_ark_60fps = 0;
         return;
     }
-    // a second copy of the same table (frame times for intervals 1..5) feeds other systems (animation, dialogue)
+    // The second copy of the table (main+0x39848E0) is read in one place, main+0x2B43450: game-frame steps =
+    // measured frame time / table[interval]. The measured time already follows the first table, so this one stays
+    // at 1/30 s (0.5 steps a frame at 60 fps); halving it too ran those animations at double speed.
+    // ARK_60FPS_TABLE2=1 halves it anyway (for comparison).
     uint64_t *step2 = (uint64_t *)(uintptr_t)(0x7000000000ull + 0x39848E8);
     if (g_ark_60fps == 1) {
         *step = 16666667ull;
-        if (*step2 == 33333334ull && step2[-1] == 16666667ull) *step2 = 16666667ull;
-        else LOG("[patch] 60 fps: second frame-time table not as expected, left alone\n");
+        if (getenv("ARK_60FPS_TABLE2") && atoi(getenv("ARK_60FPS_TABLE2")) && *step2 == 33333334ull) *step2 = 16666667ull;
     }
     LOG("[patch] 60 fps (%s game speed%s)\n", g_ark_60fps == 1 ? "normal" : "double",
         g_ark_60fps == 1 && sites_mask != 15 ? ", some fixed-step code sites left at 1/30 s" : "");
