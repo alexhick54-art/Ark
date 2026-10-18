@@ -73,7 +73,7 @@ Set as environment variables when starting Ark (e.g. `ARK_60FPS=1 build/ark game
 | `ARK_60FPS_SITES=<mask>` | with `ARK_60FPS=1`, which groups of code sites switch (default 79 = all: 1, 2, 4, 8 and 64; see `tools/lifter/variants.py`). For narrowing down something that runs at the wrong speed. |
 | `ARK_LOD=1` / `2` / `3` | draw distance: Pokémon/NPC load radius, tree and detail fade distances, animation level-of-detail (1, the community LoD mod's values); plus terrain detail further out (2); as far as the settings go, a 20 km far plane and every model at full detail (3). Applied to the game's own config files in memory. |
 | `ARK_LOD0=1` / `0` | models always at full detail (on by default with `ARK_LOD=3`; `0` turns it off there). |
-| `ARK_SHADOWS=1` | tighter shadow cascades and the shadow map at 2x resolution (`ARK_SHADOW_RES=2..4` sets the factor). |
+| `ARK_SHADOWS=1` | the shadow map at 2x resolution (`ARK_SHADOW_RES=2..4` sets the factor; 4 = 4096x4096). `ARK_SHADOWS=2` also pulls the shadow cascades in (experimental: sharper near the player, can look odd further out). |
 | `ARK_ANISO=<n>` | anisotropic filtering, 2..16, for every mipmapped texture. |
 | `ARK_TEX_LOD_BIAS=<f>` | mip bias (e.g. `-0.5`: sharper distant textures). |
 | `ARK_MODS=<folder>` | files under `<folder>/romfs/` replace the game's (Atmosphere's layered RomFS layout: community RomFS mods work as they are). |

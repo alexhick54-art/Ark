@@ -29,7 +29,7 @@ bool mods_romfs_override(const char *path, char *host, size_t size) {
 typedef struct { const char *file, *key; int idx; const char *value; int preset; } Edit;  // preset: lowest level using it
 
 // Each setting is "value,...,max,min" ("40,100,1": 40, at most 100). Presets: ARK_LOD=1/2/3 (draw distance; 1 and 2 are
-// the community LoD mods' values, 3 is as far as the settings go) and ARK_SHADOWS=1 (preset 100 below). Values above a
+// the community LoD mods' values, 3 is as far as the settings go) and ARK_SHADOWS=2 (preset 100 below). Values above a
 // setting's max get the max raised with them. The trees' near fade (kTreeFadeDistanceNear) is left alone: the mods'
 // change to it made trunks vanish close to the camera.
 #define CC "field_common_config.bin"
@@ -64,7 +64,8 @@ static const Edit edits[] = {
     {AF, "framerateLv2capacity", 0, "100", 3}, {AF, "framerateLv2capacity", 1, "100", 3},
     {AF, "distanceBaseValue", 0, "1000", 3}, {AF, "distanceBaseValue", 1, "1000", 3},
     {CAM, "default_far", 0, "20000", 3},
-    // ARK_SHADOWS=1: the shadow cascades pulled in (more of the shadow map near the player: sharper shadows)
+    // ARK_SHADOWS=2: the shadow cascades pulled in (more of the shadow map near the player: sharper close up, but the
+    // splits are a guess at the format and looked odd in play; ARK_SHADOWS=1 is resolution only)
     {SH, "cascadeShadowSplit1", 0, "0.18", 100},
     {SH, "cascadeShadowSplit2", 0, "0.2", 100},
     {SH, "cascadeShadowSplit3", 0, "0.2", 100},
@@ -131,12 +132,12 @@ static bool set_value(Buf *b, uint64_t st, const char *v) {
     return true;
 }
 
-static bool active(const Edit *ed, int lod, int shadows) { return ed->preset == 100 ? shadows : ed->preset <= lod; }
+static bool active(const Edit *ed, int lod, int shadows) { return ed->preset == 100 ? shadows >= 2 : ed->preset <= lod; }
 
 uint8_t *mods_config_edit(const char *path, const uint8_t *data, uint64_t size, uint64_t *out_size) {
     const char *e = getenv("ARK_LOD");
-    int lod = e ? atoi(e) : 0, shadows = getenv("ARK_SHADOWS") && atoi(getenv("ARK_SHADOWS")) > 0;
-    if (lod <= 0 && !shadows) return NULL;
+    int lod = e ? atoi(e) : 0, shadows = getenv("ARK_SHADOWS") ? atoi(getenv("ARK_SHADOWS")) : 0;
+    if (lod <= 0 && shadows < 2) return NULL;
     const char *name = strrchr(path, '/');
     name = name ? name + 1 : path;
     if (!strstr(path, "app_config/")) return NULL;
@@ -156,7 +157,7 @@ uint8_t *mods_config_edit(const char *path, const uint8_t *data, uint64_t size, 
         done++;
     }
     if (!b.d) return NULL;
-    LOG("[mods] draw distance %d%s: %d settings changed in %s\n", lod, shadows ? " + shadows" : "", done, name);
+    LOG("[mods] draw distance %d%s: %d settings changed in %s\n", lod, shadows >= 2 ? " + shadow cascades" : "", done, name);
     *out_size = b.n;
     return b.d;
 }
