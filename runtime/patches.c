@@ -12,7 +12,7 @@
 // main+0x39848E0, below) and asks for present interval 2 at main+0x2AA27A8 (skipped there, see
 // objects.c). ARK_60FPS=2: 60 fps with the 1/30 s step kept (the game runs twice as fast).
 int g_ark_60fps;
-static int sites_mask = 15;
+static int sites_mask = 47;  // groups 1, 2, 4, 8, 32
 
 // Run-time alternatives in the translated code (tools/lifter/variants.py): 1/30 s fixed steps in code, 1/60 s at 60 fps.
 // ARK_60FPS_SITES=<mask> picks the groups (default all; 0 none), to narrow down a group that misbehaves.
@@ -47,7 +47,7 @@ void game_patches_apply(void) {
         if (getenv("ARK_60FPS_TABLE2") && atoi(getenv("ARK_60FPS_TABLE2")) && *step2 == 33333334ull) *step2 = 16666667ull;
     }
     LOG("[patch] 60 fps (%s game speed%s)\n", g_ark_60fps == 1 ? "normal" : "double",
-        g_ark_60fps == 1 && sites_mask != 15 ? ", some fixed-step code sites left at 1/30 s" : "");
+        g_ark_60fps == 1 && sites_mask != 47 ? ", some fixed-step code sites left at 1/30 s" : "");
 }
 
 // Debug: instructions named in ARK_GEN_PROBES when the code was generated call this first. From presented frame

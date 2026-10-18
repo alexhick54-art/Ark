@@ -63,9 +63,9 @@ static void watch_groups(void) {
         char *end;
         float want = strtof(p, &end);
         if (end == p) break;
-        int n = 0;
+        int n = 0, per = getenv("ARK_TIMESCAN_WATCH_PER") ? atoi(getenv("ARK_TIMESCAN_WATCH_PER")) : 3;
         uint64_t lastpg = 0;
-        for (size_t i = 0; i < ncand && n < 3; i++) {
+        for (size_t i = 0; i < ncand && n < per; i++) {
             if (fabsf(cand[i].delta - want) > fmaxf(1e-6f, fabsf(want) * 2e-3f)) continue;
             uint64_t pg = cand[i].addr >> 12;
             if (pg == lastpg) continue;  // spread over objects

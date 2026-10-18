@@ -70,7 +70,7 @@ Set as environment variables when starting Ark (e.g. `ARK_60FPS=1 build/ark game
 | Variable | Effect |
 |---|---|
 | `ARK_60FPS=1` | 60 fps at normal game speed (v1.1.1): the game's frame time tables and 42 fixed 1/30 s steps in its code become 1/60 s. `=2`: 60 fps at double speed. |
-| `ARK_60FPS_SITES=<mask>` | with `ARK_60FPS=1`, which groups of code sites switch (default 15 = all; see `tools/lifter/variants.py`). For narrowing down something that runs at the wrong speed. |
+| `ARK_60FPS_SITES=<mask>` | with `ARK_60FPS=1`, which groups of code sites switch (default 47 = groups 1, 2, 4, 8 and 32; see `tools/lifter/variants.py`). For narrowing down something that runs at the wrong speed. |
 | `ARK_LOD=1` / `2` / `3` | draw distance: Pokémon/NPC load radius, tree and detail fade distances, animation level-of-detail (1, the community LoD mod's values); plus terrain detail further out (2); as far as the settings go, a 20 km far plane and every model at full detail (3). Applied to the game's own config files in memory. |
 | `ARK_LOD0=1` / `0` | models always at full detail (on by default with `ARK_LOD=3`; `0` turns it off there). |
 | `ARK_SHADOWS=1` | tighter shadow cascades and the shadow map at 2x resolution (`ARK_SHADOW_RES=2..4` sets the factor). |
