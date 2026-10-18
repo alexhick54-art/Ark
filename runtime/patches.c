@@ -12,13 +12,19 @@
 // main+0x39848E0, below) and asks for present interval 2 at main+0x2AA27A8 (skipped there, see
 // objects.c). ARK_60FPS=2: 60 fps with the 1/30 s step kept (the game runs twice as fast).
 int g_ark_60fps;
-static int sites_mask = 15;
+static int sites_mask = 15 | 64;
 
 // Run-time alternatives in the translated code (tools/lifter/variants.py): 1/30 s fixed steps in code, 1/60 s at 60 fps.
 // ARK_60FPS_SITES=<mask> picks the groups (default all; 0 none), to narrow down a group that misbehaves.
 static int force_lod0;
 int ark_variant(int group) {
     if (group == 16) return force_lod0;
+    if (group == 64 || group == 65) {  // text printer: skip every other presented frame (65 repeats 64's choice)
+        static __thread int last;
+        extern uint64_t renderer_present_count(void);
+        if (group == 64) last = g_ark_60fps == 1 && (sites_mask & 64) && (renderer_present_count() & 1);
+        return last;
+    }
     return g_ark_60fps == 1 && (sites_mask & group) != 0;
 }
 
@@ -47,7 +53,7 @@ void game_patches_apply(void) {
         if (getenv("ARK_60FPS_TABLE2") && atoi(getenv("ARK_60FPS_TABLE2")) && *step2 == 33333334ull) *step2 = 16666667ull;
     }
     LOG("[patch] 60 fps (%s game speed%s)\n", g_ark_60fps == 1 ? "normal" : "double",
-        g_ark_60fps == 1 && sites_mask != 15 ? ", some fixed-step code sites left at 1/30 s" : "");
+        g_ark_60fps == 1 && sites_mask != (15 | 64) ? ", some fixed-step code sites left at 1/30 s" : "");
 }
 
 static const char *dpc0(void) { return getenv("ARK_PROBE_DUMP_PC"); }
