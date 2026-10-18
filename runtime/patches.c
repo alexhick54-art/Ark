@@ -55,24 +55,48 @@ void game_patches_apply(void) {
 void ark_probe(Cpu *c, uint64_t pc) {
     extern uint64_t renderer_present_count(void);
     static long at = -1, maxn;
-    static struct { uint64_t pc; long n; } seen[64];
-    static int nseen;
+    static struct { uint64_t pc, lr; long n; } seen[512];
+    static int nseen, bylr = -1;
+    if (bylr < 0) bylr = getenv("ARK_PROBE_BYLR") && atoi(getenv("ARK_PROBE_BYLR"));  // count visits per caller
+    uint64_t lr = bylr ? c->x[30] : 0;
     if (at < 0) {
         at = getenv("ARK_PROBE_AT") ? atol(getenv("ARK_PROBE_AT")) : 1;
         maxn = getenv("ARK_PROBE_N") ? atol(getenv("ARK_PROBE_N")) : 6;
     }
     if ((long)renderer_present_count() < at) return;
     int i = 0;
-    while (i < nseen && seen[i].pc != pc) i++;
-    if (i == nseen) { if (nseen == 64) return; seen[nseen++].pc = pc; }
+    while (i < nseen && (seen[i].pc != pc || seen[i].lr != lr)) i++;
+    if (i == nseen) { if (nseen == 512) return; seen[nseen].pc = pc, seen[nseen++].lr = lr; }
     if (seen[i].n++ >= maxn) return;
     double d[4];
     float f[4];
     for (int k = 0; k < 4; k++) { uint64_t lo = (uint64_t)c->v[k]; memcpy(&d[k], &lo, 8); memcpy(&f[k], &lo, 4); }
-    LOG("[probe] %llx frame %llu x0 %llx x1 %llx x8 %llx x9 %llx x19 %llx x20 %llx lr %llx | v0 %llx (%g) v1 %llx v2 %llx v3 %llx\n",
+    LOG("[probe] %llx frame %llu x0 %llx x1 %llx x8 %llx x9 %llx x19 %llx x20 %llx lr %llx | v0 %llx (%g) v1 %llx v2 %llx v3 %llx v4 %llx\n",
         (unsigned long long)pc, (unsigned long long)renderer_present_count(), (unsigned long long)c->x[0],
         (unsigned long long)c->x[1], (unsigned long long)c->x[8], (unsigned long long)c->x[9],
         (unsigned long long)c->x[19], (unsigned long long)c->x[20], (unsigned long long)c->x[30],
         (unsigned long long)(uint64_t)c->v[0], d[0], (unsigned long long)(uint64_t)c->v[1],
-        (unsigned long long)(uint64_t)c->v[2], (unsigned long long)(uint64_t)c->v[3]);
+        (unsigned long long)(uint64_t)c->v[2], (unsigned long long)(uint64_t)c->v[3],
+        (unsigned long long)(uint64_t)c->v[4]);
+    // ARK_PROBE_DUMP=<reg>:<hex off>:<hex len>,...: also the memory at x<reg>+off, as floats and words
+    const char *dump = getenv("ARK_PROBE_DUMP"), *dpc = getenv("ARK_PROBE_DUMP_PC");  // (only at that pc, if set)
+    if (dpc && strtoull(dpc, NULL, 16) != pc) dump = NULL;
+    for (const char *p = dump; p && *p;) {
+        char *e;
+        int r = (int)strtol(p, &e, 10);
+        if (*e != ':') break;
+        long off = strtol(e + 1, &e, 16), len = 16;
+        if (*e == ':') len = strtol(e + 1, &e, 16);
+        uint64_t base = c->x[r & 31] + off;
+        LOG("[probe]   x%d+%#lx:", r, off);
+        for (long k = 0; k + 4 <= len; k += 4) {
+            uint32_t w;
+            float f;
+            memcpy(&w, (const void *)(uintptr_t)(base + k), 4);
+            memcpy(&f, &w, 4);
+            LOG(" %x(%g)", w, f);
+        }
+        LOG("\n");
+        p = *e == ',' ? e + 1 : e;
+    }
 }
