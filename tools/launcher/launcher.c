@@ -34,6 +34,24 @@ static const wchar_t *SHADOW_ITEMS[] = {L"Game default (1024)", L"2x (2048)", L"
 static const wchar_t *SCALE_ITEMS[] = {L"1", L"1.5", L"2", L"0.75", L"0.5"};
 static const wchar_t *ANISO_ITEMS[] = {L"Off", L"2x", L"4x", L"8x", L"16x"};
 static const wchar_t *BIAS_ITEMS[] = {L"0", L"-0.5", L"-1"};
+static const wchar_t *LOD0_ITEMS[] = {L"With draw distance 3", L"Always", L"Never"};
+
+// right column: on/off options, each one environment variable (or a bit of ARK_60FPS_SITES)
+typedef struct { const wchar_t *label, *key, *var, *val; int bit, def; HWND h; } Check;
+static Check checks[] = {
+    {L"Timers and movement steps", L"g1", NULL, NULL, 1, 1},
+    {L"Fixed-step fallbacks (physics)", L"g2", NULL, NULL, 2, 1},
+    {L"Objects' default time step", L"g4", NULL, NULL, 4, 1},
+    {L"Time steps passed as arguments", L"g8", NULL, NULL, 8, 1},
+    {L"Dialogue text at the 30 fps pace", L"g64", NULL, NULL, 64, 1},
+    {L"Halve the second frame table (old behaviour)", L"table2", L"ARK_60FPS_TABLE2", L"1", 0, 0},
+    {L"Save translated shaders (build\\glsl)", L"savemsl", L"LARECOMP_SAVE_MSL", L"1", 0, 0},
+    {L"F9 frame dumps include buffer data", L"dbgdata", L"LARECOMP_DEBUG_DATA", L"1", 0, 0},
+    {L"Thread CPU profile in the log (every 2 s)", L"profsvc", L"LARECOMP_PROF_SVC", L"1", 0, 0},
+    {L"Hottest game functions in the log (every 10 s)", L"sample", L"LARECOMP_SAMPLE", L"10", 0, 0},
+    {L"Log every file the game opens", L"logopen", L"ARK_LOG_OPEN", L"1", 0, 0},
+};
+static HWND h_lod0;
 
 static int S(int v) { return MulDiv(v, dpi, 96); }
 
@@ -44,6 +62,11 @@ static HWND add(const wchar_t *cls, const wchar_t *text, DWORD style, int x, int
     return c;
 }
 static HWND label(const wchar_t *text, int x, int y, int w) { return add(L"STATIC", text, 0, x, y + 3, w, 20, 0); }
+static HWND heading_at(const wchar_t *text, int x, int y) {
+    HWND h = add(L"STATIC", text, 0, x, y, 330, 20, 0);
+    SendMessageW(h, WM_SETFONT, (WPARAM)font_bold, TRUE);
+    return h;
+}
 static HWND heading(const wchar_t *text, int y) {
     HWND h = add(L"STATIC", text, 0, 16, y, 560, 20, 0);
     SendMessageW(h, WM_SETFONT, (WPARAM)font_bold, TRUE);
@@ -85,6 +108,8 @@ static void save_all(void) {
     save_text(L"mods", h_mods);
     save_text(L"config", h_config);
     save_text(L"extra", h_extra);
+    save_int(L"lod0", sel(h_lod0));
+    for (int i = 0; i < N(checks); i++) save_int(checks[i].key, (int)SendMessageW(checks[i].h, BM_GETCHECK, 0, 0));
 }
 static void load_all(void) {
     load_text(L"game", h_game, L"game");
@@ -98,6 +123,9 @@ static void load_all(void) {
     load_text(L"mods", h_mods, L"");
     load_text(L"config", h_config, L"");
     load_text(L"extra", h_extra, L"");
+    SendMessageW(h_lod0, CB_SETCURSEL, GetPrivateProfileIntW(L"ark", L"lod0", 0, ini), 0);
+    for (int i = 0; i < N(checks); i++)
+        SendMessageW(checks[i].h, BM_SETCHECK, GetPrivateProfileIntW(L"ark", checks[i].key, checks[i].def, ini), 0);
 }
 
 // ---- launching
@@ -138,6 +166,16 @@ static void launch(void) {
     env(L"ARK_TEX_LOD_BIAS", wcscmp(b, L"0") ? b : NULL);
     get_text(h_mods, b, MAX_PATH);
     env(L"ARK_MODS", b);
+    int l0 = sel(h_lod0);
+    env(L"ARK_LOD0", l0 == 1 ? L"1" : l0 == 2 ? L"0" : NULL);
+    int mask = 0, all = 0;
+    for (int i = 0; i < N(checks); i++) {
+        bool on = SendMessageW(checks[i].h, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        if (checks[i].bit) { all |= checks[i].bit; if (on) mask |= checks[i].bit; }
+        else env(checks[i].var, on ? checks[i].val : NULL);
+    }
+    swprintf(b, 16, L"%d", mask);
+    env(L"ARK_60FPS_SITES", mask != all ? b : NULL);
     get_text(h_config, b, 4096);
     env(L"ARK_CONFIG", b);
     // extra variables, one KEY=VALUE per line (test options)
@@ -247,7 +285,32 @@ static void build_ui(void) {
     add(L"BUTTON", L"Open ark.log", WS_TABSTOP, 176, y, 130, 34, ID_OPENLOG);
     add(L"BUTTON", L"Open Ark folder", WS_TABSTOP, 318, y, 130, 34, ID_OPENDIR);
     add(L"BUTTON", L"Defaults", WS_TABSTOP, 460, y, 128, 34, ID_PRESET_DEFAULT); y += 44;
-    h_status = add(L"STATIC", L"", SS_LEFTNOWORDWRAP, 24, y, 564, 20, ID_STATUS);
+    h_status = add(L"STATIC", L"", SS_LEFTNOWORDWRAP, 24, y, 900, 20, ID_STATUS);
+
+    // right column: testing switches
+    int x = 624;
+    y = 12;
+    heading_at(L"60 fps: code switched to 1/60 s", x, y); y += 26;
+    for (int i = 0; i < N(checks) && checks[i].bit; i++, y += 26)
+        checks[i].h = add(L"BUTTON", checks[i].label, BS_AUTOCHECKBOX | WS_TABSTOP, x + 8, y, 320, 22, 200 + i);
+    y += 10;
+    heading_at(L"Testing", x, y); y += 26;
+    label(L"Full-detail models", x + 8, y, 120);
+    h_lod0 = combo(LOD0_ITEMS, N(LOD0_ITEMS), x + 132, y, 196, 300, false); y += 32;
+    int i = 0;
+    while (checks[i].bit) i++;
+    checks[i].h = add(L"BUTTON", checks[i].label, BS_AUTOCHECKBOX | WS_TABSTOP, x + 8, y, 320, 22, 200 + i);
+    y += 36;
+    heading_at(L"Diagnostics", x, y); y += 26;
+    for (i++; i < N(checks); i++, y += 26)
+        checks[i].h = add(L"BUTTON", checks[i].label, BS_AUTOCHECKBOX | WS_TABSTOP, x + 8, y, 320, 22, 200 + i);
+    y += 12;
+    heading_at(L"Keys in the game window", x, y); y += 24;
+    static const wchar_t *keys[] = {L"F2  60 fps on / off", L"F3  full-detail models", L"F4  grass to its limit",
+                                    L"F5  dialogue text pace", L"F6  second frame table halved", L"F9  frame dump",
+                                    L"F10  timing scan", L"F11  fullscreen",
+                                    L"(the title bar shows which are on)"};
+    for (int k = 0; k < N(keys); k++, y += 20) label(keys[k], x + 8, y, 320);
 }
 
 static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM w, LPARAM l) {
@@ -274,6 +337,8 @@ static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM w, LPARAM l) {
             SetWindowTextW(h_bias, L"0");
             SetWindowTextW(h_config, L"");
             SetWindowTextW(h_extra, L"");
+            SendMessageW(h_lod0, CB_SETCURSEL, 0, 0);
+            for (int i = 0; i < N(checks); i++) SendMessageW(checks[i].h, BM_SETCHECK, checks[i].def, 0);
             return 0;
         }
         break;
@@ -325,7 +390,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show) {
     font = CreateFontW(-S(14), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
     font_bold = CreateFontW(-S(15), 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
 
-    RECT r = {0, 0, S(612), S(640)};
+    RECT r = {0, 0, S(968), S(668)};
     DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     AdjustWindowRect(&r, style, FALSE);
     wnd = CreateWindowW(L"ArkLauncher", L"Ark Launcher", style, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left,

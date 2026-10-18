@@ -2590,6 +2590,20 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
                 for (int k = 0; k < 64 && k * 4 < (int)st.ubuf[0][cb].size; k++) LOG(" %.6g", u[k]);
                 LOG("\n");
                 watch_add(st.ubuf[0][cb].addr, st.ubuf[0][cb].addr + 64);
+                // the same 32 bytes elsewhere in the game's memory: where it was copied from (watched too)
+                extern int kernel_phys_regions(uint64_t *, uint64_t *, int, uint64_t *);
+                uint64_t ra[256], rs[256], gen;
+                int nr = kernel_phys_regions(ra, rs, 256, &gen);
+                const uint8_t *pat = (const uint8_t *)(uintptr_t)st.ubuf[0][cb].addr + 16;  // (skip a header-like first entry)
+                int hits = 0;
+                for (int r = 0; r < nr && hits < 4; r++)
+                    for (uint64_t o = 0; o + 32 <= rs[r] && hits < 4; o += 4) {
+                        uint64_t a = ra[r] + o;
+                        if (a == (uint64_t)(uintptr_t)pat || memcmp((const void *)(uintptr_t)a, pat, 32)) continue;
+                        LOG("[draw]   vcb%d data also at %llx\n", cb, (unsigned long long)a);
+                        watch_add(a, a + 32);
+                        hits++;
+                    }
             }
             watch_arm();
         }

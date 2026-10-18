@@ -82,6 +82,10 @@ Set as environment variables when starting Ark (e.g. `ARK_60FPS=1 build/ark game
 | `LARECOMP_SAMPLE=<s>` | sampling profiler: the hottest game functions every `<s>` seconds. |
 | `LARECOMP_PROF_SVC=1` | per-thread CPU time and kernel wait times every 2 s. |
 
+In the game window, F2-F6 switch things at run time (the title bar shows their state): F2 60 fps, F3 full-detail
+models, F4 grass to its limit, F5 dialogue text pace, F6 the second frame table halved. F9 dumps a frame, F10 starts a
+timing scan. On Windows, `make launcher` builds `build/ArkLauncher.exe`, which sets all of the options above.
+
 ## Credits
 
 The translator, CPU helpers and the runtime's core come from **LAS Recomp** by Peiikai (MIT); see

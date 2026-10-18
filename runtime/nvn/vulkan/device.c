@@ -666,6 +666,8 @@ static int exit_guard(void *a) {  // a GPU wait that never returns must not keep
     return 0;
 }
 
+void ui_set_title(const char *title) { if (window) SDL_SetWindowTitle(window, title); }
+
 static void quick_exit_handler(void) {
     SDL_DetachThread(SDL_CreateThread(exit_guard, "exit_guard", NULL));
     static int trace = -1;
@@ -694,7 +696,7 @@ void ui_window_init(void) {
     if (getenv("LARECOMP_WINDOW")) sscanf(getenv("LARECOMP_WINDOW"), "%dx%d", &win_w, &win_h);
     SDL_WindowFlags wflags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (getenv("LARECOMP_HIDDEN")) wflags |= SDL_WINDOW_HIDDEN;
-    window = SDL_CreateWindow("LAS Recomp", win_w, win_h, wflags);
+    window = SDL_CreateWindow("Ark", win_w, win_h, wflags);
     if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
     rt_window_icon(window);
     // the Fullscreen setting applies from the start screen on (not only once the game runs); test windows stay windows
@@ -734,7 +736,9 @@ void backend_clear_window(void) {
 int ui_run(void) {
     ui_window_init();
     atomic_store(&ui_ready, true);
-    for (;;) {
+    for (int tick = 0;; tick++) {
+        extern void hotkeys_update_title(void);
+        if (tick % 120 == 0) hotkeys_update_title();  // (the switches' state, F2..F6: runtime/hotkeys.c)
         if (rt_reboot_requested()) return rt_reboot_requested();  // (runtime/main.c tears the game down)
         SDL_Event e;
         while (SDL_WaitEventTimeout(&e, 16)) {

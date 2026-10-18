@@ -16,7 +16,7 @@ become `mov w0, #1; ret` ("still printing"); ark_variant(65) repeats group 64's 
 
 Group 16 (ARK_LOD=3, or ARK_LOD0=1): models always at their full-detail level. The per-model level-of-detail update
 (main+0x1ACD904) switches on the model's LOD mode (+496): 0 and 4 (what the game's SetLodLevelZero command sets) pick
-level 0, 1-3 choose by distance. Its load of the mode becomes `mov w8, #4`. Also in group 16: grass and ground detail
+level 0, 1-3 choose by distance. Its load of the mode becomes `mov w8, #4`. Group 17 (on with group 16): grass and ground detail
 fade out at 0.9375 of their generation grid's reach (main+0x2B23BA8, `ldr s2, [x19, #680]` -> `fmov s2, #0.9375`)
 instead of the terrain file's ratio (0.75), as far as the generated detail goes without a hard edge.
 
@@ -70,6 +70,6 @@ VARIANTS = {
         0xfbfbd0: (0xd100c3ff, 0x52800020, 64),  # sub sp, sp, #48 -> mov w0, #1
         0xfbfbd4: (0xa9014ff4, 0xd65f03c0, 65),  # stp x20, x19, [sp, #16] -> ret
         0x1acd924: (0xb941f2a8, 0x52800088, 16),  # ldr w8, [x21, #496] -> mov w8, #4 (LOD level 0)
-        0x2b23ba8: (0xbd42aa62, 0x1e2dd002, 16),  # ldr s2, [x19, #680] -> fmov s2, #0.9375 (grass/detail fade ratio)
+        0x2b23ba8: (0xbd42aa62, 0x1e2dd002, 17),  # ldr s2, [x19, #680] -> fmov s2, #0.9375 (grass/detail fade ratio)
     },
 }

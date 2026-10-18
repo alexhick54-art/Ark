@@ -145,6 +145,8 @@ void input_handle_event(const SDL_Event *e) {
         if (n > 0 && !pad) { pad = SDL_OpenGamepad(ids[0]); LOG("[input] gamepad: %s\n", SDL_GetGamepadName(pad)); note_family(); }
         SDL_free(ids);
     }
+    extern bool hotkeys_handle(const SDL_Event *e);
+    if (hotkeys_handle(e)) return;  // F2..F6: run-time switches (runtime/hotkeys.c)
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP:
         if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_F9 && !e->key.repeat) g_debug_frame_request = 1;

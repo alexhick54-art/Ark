@@ -16,9 +16,10 @@ static int sites_mask = 15 | 64;
 
 // Run-time alternatives in the translated code (tools/lifter/variants.py): 1/30 s fixed steps in code, 1/60 s at 60 fps.
 // ARK_60FPS_SITES=<mask> picks the groups (default all; 0 none), to narrow down a group that misbehaves.
-static int force_lod0;
+static int force_lod0, grass_far;
 int ark_variant(int group) {
     if (group == 16) return force_lod0;
+    if (group == 17) return grass_far;
     if (group == 64 || group == 65) {  // text printer: skip every other presented frame (65 repeats 64's choice)
         static __thread int last;
         extern uint64_t renderer_present_count(void);
@@ -33,6 +34,7 @@ void game_patches_apply(void) {
     force_lod0 = (getenv("ARK_LOD") && atoi(getenv("ARK_LOD")) >= 3) || (getenv("ARK_LOD0") && atoi(getenv("ARK_LOD0")) != 0);
     if (getenv("ARK_LOD0") && atoi(getenv("ARK_LOD0")) == 0) force_lod0 = 0;
     if (force_lod0) LOG("[patch] models at full detail (no level of detail)\n");
+    grass_far = force_lod0;
     const char *e = getenv("ARK_60FPS");
     g_ark_60fps = e ? atoi(e) : 0;
     if (!g_ark_60fps) return;
@@ -120,4 +122,43 @@ void ark_probe(Cpu *c, uint64_t pc) {
         LOG("\n");
         p = *e == ',' ? e + 1 : e;
     }
+}
+
+// ---- run-time switches (runtime/hotkeys.c: F2..F5 in the game window; the title bar shows them)
+static int table2_half;
+static bool frame_tables_ok(void) {
+    uint64_t v = *(uint64_t *)(uintptr_t)(0x7000000000ull + 0x397E8D8);
+    return v == 33333334ull || v == 16666667ull;
+}
+int ark_switch_get(int which) {
+    switch (which) {
+    case 0: return g_ark_60fps == 1;
+    case 1: return force_lod0;
+    case 2: return grass_far;
+    case 3: return (sites_mask & 64) != 0;
+    case 4: return table2_half || (getenv("ARK_60FPS_TABLE2") && atoi(getenv("ARK_60FPS_TABLE2")));
+    }
+    return 0;
+}
+void ark_switch_toggle(int which) {
+    extern void nvn_apply_60fps_interval(int on);
+    uint64_t *step = (uint64_t *)(uintptr_t)(0x7000000000ull + 0x397E8D8), *step2 = step + (0x39848E8 - 0x397E8D8) / 8;
+    switch (which) {
+    case 0:
+        if (!frame_tables_ok()) { LOG("[switch] 60 fps: not version 1.1.1's frame table\n"); return; }
+        g_ark_60fps = g_ark_60fps == 1 ? 0 : 1;
+        *step = g_ark_60fps ? 16666667ull : 33333334ull;
+        if (!g_ark_60fps) *step2 = 33333334ull, table2_half = 0;
+        nvn_apply_60fps_interval(g_ark_60fps);
+        break;
+    case 1: force_lod0 = !force_lod0; break;
+    case 2: grass_far = !grass_far; break;
+    case 3: sites_mask ^= 64; break;
+    case 4:
+        table2_half = !ark_switch_get(4);
+        *step2 = table2_half && g_ark_60fps ? 16666667ull : 33333334ull;
+        break;
+    }
+    static const char *names[] = {"60 fps", "full-detail models", "grass to its limit", "text at 30 fps pace", "second frame table halved"};
+    if (which >= 0 && which < 5) LOG("[switch] %s: %s\n", names[which], ark_switch_get(which) ? "on" : "off");
 }

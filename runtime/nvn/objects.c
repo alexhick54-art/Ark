@@ -648,8 +648,14 @@ NVN(nvnWindowGetNumTextures) { RET(WIN->num); }
 NVN(nvnWindowGetNumActiveTextures) { RET(WIN->active); }
 NVN(nvnWindowSetNumActiveTextures) { WIN->active = (int)A(1); }
 NVN(nvnWindowGetPresentInterval) { RET(WIN->interval); }
+static NvnWindow *game_window;  // (the window whose interval ARK_60FPS overrides, and what the game asked for)
+static int game_interval = 2;
+void nvn_apply_60fps_interval(int on) {  // F2 in the window (runtime/hotkeys.c): switch 60 fps at run time
+    if (game_window) game_window->interval = on ? 1 : game_interval;
+}
 NVN(nvnWindowSetPresentInterval) {
     int interval = (int)A(1);
+    if (c->x[30] == 0x7002aa27acull) game_window = WIN, game_interval = interval;
     // Ark: ARK_60FPS (runtime/patches.c): Legends: Arceus 1.1.1's switch to interval 2 (main+0x2AA27A8) is ignored,
     // so the window keeps the interval 1 it was created with
     extern int g_ark_60fps;

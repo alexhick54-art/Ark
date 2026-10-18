@@ -50,7 +50,7 @@ RT_SRC   := $(wildcard runtime/*.c) $(PLATFORM) $(wildcard runtime/services/*.c)
 HEADLESS ?= 0
 ifeq ($(HEADLESS),1)
 # no renderer, no SDL: the NVN layer, input and the menu hooks stay out
-RT_SRC   := $(filter-out runtime/ui_none.c runtime/hle/input.c runtime/hle/bindings.c,$(RT_SRC))
+RT_SRC   := $(filter-out runtime/ui_none.c runtime/hle/input.c runtime/hle/bindings.c runtime/hotkeys.c,$(RT_SRC))
 RTDEFS   := -DARK_HEADLESS -Iruntime/headless
 LDLIBS   := -lpthread -lm -ldl
 else
