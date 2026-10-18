@@ -21,6 +21,28 @@ small (~35 ms per second), so the cost is in the game's threads (being profiled 
 | 3. NVN on Vulkan + shader translation: first frame | **done**: logo, language menu, opening scene with text |
 | 4. Audio out, input, saves, the field | later |
 
+## 60 fps (ARK_60FPS=1), what is known (2026-10-18)
+
+- **Clock:** the game steps by a frame time from a table of present-interval durations (main+0x397E8D0, entry for
+  interval 2 = 33,333,334 ns). Ark halves that entry and ignores the game's SetPresentInterval(2). Probes at 60 fps
+  show every `ns / 1e9` conversion in main (about 60 sites) receiving 16,666,667 ns.
+- **Second table (main+0x39848E0) stays at 1/30 s.** Its only reader (main+0x2B43450) computes game-frame steps as
+  measured frame time / table[interval]; halving it ran those counters (model/material animations, UI) at double speed.
+  This was the "flame, water, text boxes, some animations too fast" report. `ARK_60FPS_TABLE2=1` restores the old
+  behaviour for comparison. Let's Go recomp found the same formula in its engine (raulzrrs/letsgo-recomp,
+  docs/PESQUISA-60FPS.md).
+- **Skeletal animation is authored at 60 fps** (player +4 = 60; main+0x27C248C adds dt * 60 * speed), so it steps 2
+  frames per frame at 30 fps and 1 at 60: same speed. Particles step in 1/60 s units (main+0x2B90024): also right.
+- **Dialogue text printer** (main+0xFBFBD0, prints N characters per call and counts wait frames) is per call: variant
+  groups 64/65 skip it every other frame.
+- **Fixed 1/30 s steps in code**: 42 MOVK sites switched at run time (variants.py groups 1/2/4/8).
+- **Method:** `ARK_TIMESCAN=<frame>` or F10 lists floats that change by the same step every frame; the same scene at
+  30 and 60 fps should show every step halved at 60. On the beach (30: frame ~4400, 60: ~8800) all matched groups
+  halve after the table fix. `ARK_TIMESCAN_WATCH`, `ARK_WATCH`, `ARK_GEN_PROBES` + `ARK_PROBE_*` name the code
+  writing a value (Linux watchpoints single-step and log old -> new).
+- **Not yet checked:** battles, captures and thrown items (Let's Go advances these per update, so its 60 fps mode
+  keeps them at 30).
+
 ## Milestone 1: translation
 
 | Module | Functions | Resolved switch tables | Functions on the "any instruction" fallback | Generated C |
