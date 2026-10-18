@@ -2572,6 +2572,28 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
             LOG("\n");
         }
     }
+    {   // LARECOMP_WATCH_VS=<vertex shader address>: for the first draw with it, log its vertex cbufs and watch the start
+        // of its vertex streams and cbufs (names the code that fills per-instance data: [watch] lines)
+        static int done;
+        const char *wv = getenv("LARECOMP_WATCH_VS");
+        if (wv && !done && st.program->stages[0].code_addr == strtoull(wv, NULL, 16)) {
+            done = 1;
+            extern void watch_add(uint64_t, uint64_t), watch_arm(void);
+            for (int s = 0; s < 4; s++) if (st.vbuf[s].addr) {
+                LOG("[draw]   watch vbuf%d %llx\n", s, (unsigned long long)st.vbuf[s].addr);
+                watch_add(st.vbuf[s].addr, st.vbuf[s].addr + 64);
+            }
+            for (int cb = 0; cb < 18; cb++) {
+                if (!((pr->vi->cbuf_mask >> cb) & 1) || !st.ubuf[0][cb].addr) continue;
+                const float *u = (const float *)(uintptr_t)st.ubuf[0][cb].addr;
+                LOG("[draw]   vcb%d %llx size %u:", cb, (unsigned long long)st.ubuf[0][cb].addr, (unsigned)st.ubuf[0][cb].size);
+                for (int k = 0; k < 64 && k * 4 < (int)st.ubuf[0][cb].size; k++) LOG(" %.6g", u[k]);
+                LOG("\n");
+                watch_add(st.ubuf[0][cb].addr, st.ubuf[0][cb].addr + 64);
+            }
+            watch_arm();
+        }
+    }
     for (int i = 0; i < pr->fi->ntex && i < 64; i++) {  // fragment textures: guest size / format, allocation, scale
         NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
         const TexBackend *b = t ? (const TexBackend *)t->backend : NULL;
