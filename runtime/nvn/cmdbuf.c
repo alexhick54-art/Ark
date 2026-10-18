@@ -336,21 +336,41 @@ NVN(nvnCommandBufferDiscardDepthStencil) { (void)c; }
 // ---- draws (all integer arguments fit in x1..x7)
 NVN(nvnCommandBufferDrawArrays) { Snap s = snap(c); CmdRec *r = record(c, CMD_DRAW_ARRAYS, 0, &s); r->x[3] = 0; r->x[4] = 1; }
 NVN(nvnCommandBufferDrawArraysInstanced) { Snap s = snap(c); record(c, CMD_DRAW_ARRAYS, 0, &s); }
-// Debug: LARECOMP_TRACE_COUNT=<n> logs the guest call chain of indexed draws with n indices.
+// Debug: LARECOMP_TRACE_COUNT=<n> logs the guest call chain of indexed draws with n indices; LARECOMP_TRACE_FRAME=<f>
+// logs every distinct call chain of the indexed draws recorded during presented frames f and f+1 (with their counts),
+// to find the code drawing something seen in a frame dump of that frame.
 static void trace_draw(Cpu *c, uint64_t count) {
-    static long want = -2;
-    if (want == -2) want = getenv("LARECOMP_TRACE_COUNT") ? atol(getenv("LARECOMP_TRACE_COUNT")) : -1;
-    if (want < 0 || (long)count != want) return;
-    static int n;
-    if (n++ > 40) return;
-    LOG("[trace] draw count %llu lr %llx chain:", (unsigned long long)count, (unsigned long long)c->x[30]);
+    static long want = -2, at = -2;
+    if (want == -2) {
+        want = getenv("LARECOMP_TRACE_COUNT") ? atol(getenv("LARECOMP_TRACE_COUNT")) : -1;
+        at = getenv("LARECOMP_TRACE_FRAME") ? atol(getenv("LARECOMP_TRACE_FRAME")) : -1;
+    }
+    bool by_frame = false;
+    if (at >= 0) {
+        extern uint64_t renderer_present_count(void);
+        long f = (long)renderer_present_count();
+        by_frame = f >= at && f <= at + 1;
+    }
+    if (!by_frame && (want < 0 || (long)count != want)) return;
+    uint64_t chain[14];
+    int nc = 0;
     uint64_t fp = c->x[29];
-    for (int i = 0; i < 14 && fp >= 0x7000000000ull && fp < 0x8000000000ull && (fp & 7) == 0; i++) {
-        uint64_t next = *(uint64_t *)(uintptr_t)fp, lr = *(uint64_t *)(uintptr_t)(fp + 8);
-        LOG(" %llx", (unsigned long long)lr);
-        if (next <= fp) break;
+    for (; nc < 14 && fp >= 0x7000000000ull && fp < 0x8000000000ull && (fp & 7) == 0; nc++) {
+        uint64_t next = *(uint64_t *)(uintptr_t)fp;
+        chain[nc] = *(uint64_t *)(uintptr_t)(fp + 8);
+        if (next <= fp) { nc++; break; }
         fp = next;
     }
+    static uint64_t seen[4096];
+    static int nseen, n;
+    uint64_t h = c->x[30] * 0x9E3779B97F4A7C15ull;
+    for (int i = 0; i < nc; i++) h = (h ^ chain[i]) * 0x100000001b3ull;
+    if (by_frame) {
+        for (int i = 0; i < nseen; i++) if (seen[i] == h) return;
+        if (nseen < 4096) seen[nseen++] = h;
+    } else if (n++ > 40) return;
+    LOG("[trace] draw count %llu lr %llx chain:", (unsigned long long)count, (unsigned long long)c->x[30]);
+    for (int i = 0; i < nc; i++) LOG(" %llx", (unsigned long long)chain[i]);
     LOG("\n");
 }
 

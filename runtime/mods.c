@@ -137,7 +137,8 @@ static bool active(const Edit *ed, int lod, int shadows) { return ed->preset == 
 uint8_t *mods_config_edit(const char *path, const uint8_t *data, uint64_t size, uint64_t *out_size) {
     const char *e = getenv("ARK_LOD");
     int lod = e ? atoi(e) : 0, shadows = getenv("ARK_SHADOWS") ? atoi(getenv("ARK_SHADOWS")) : 0;
-    if (lod <= 0 && shadows < 2) return NULL;
+    const char *ov = getenv("ARK_CONFIG");
+    if (lod <= 0 && shadows < 2 && !(ov && *ov)) return NULL;
     const char *name = strrchr(path, '/');
     name = name ? name + 1 : path;
     if (!strstr(path, "app_config/")) return NULL;
@@ -155,6 +156,33 @@ uint8_t *mods_config_edit(const char *path, const uint8_t *data, uint64_t size, 
         uint64_t st = find_value(&b, ed->key, ed->idx);
         if (!st || !set_value(&b, st, ed->value)) { LOG("[mods] %s: %s[%d] not found, left as is\n", name, ed->key, ed->idx); continue; }
         done++;
+    }
+    // ARK_CONFIG="key=value;key[1]=value;...": any app_config setting, in whichever file has it (for trying values)
+    for (const char *p = ov; p && *p;) {
+        const char *end = strchr(p, ';');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        char item[256];
+        if (len < sizeof item) {
+            memcpy(item, p, len);
+            item[len] = 0;
+            char *eq = strchr(item, '=');
+            if (eq) {
+                *eq = 0;
+                int idx = 0;
+                char *br = strchr(item, '[');
+                if (br) { idx = atoi(br + 1); *br = 0; }
+                Buf probe = {(uint8_t *)(b.d ? b.d : (uint8_t *)data), b.d ? b.n : size, 0};
+                if (find_value(&probe, item, idx)) {
+                    if (!b.d) { b.cap = size * 2 + 256; b.d = malloc(b.cap); memcpy(b.d, data, size); b.n = size; }
+                    uint64_t st = find_value(&b, item, idx);
+                    if (st && set_value(&b, st, eq + 1)) {
+                        done++;
+                        LOG("[mods] %s: %s[%d] = %s\n", name, item, idx, eq + 1);
+                    }
+                }
+            }
+        }
+        p = end ? end + 1 : p + len;
     }
     if (!b.d) return NULL;
     LOG("[mods] draw distance %d%s: %d settings changed in %s\n", lod, shadows >= 2 ? " + shadow cascades" : "", done, name);

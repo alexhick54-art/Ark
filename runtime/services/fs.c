@@ -259,7 +259,7 @@ static void rom_index(int fd) {
         bool hosted = rando_romfs_override(rom_files[i].path, host, sizeof host) || mods_romfs_override(rom_files[i].path, host, sizeof host);
         uint8_t *edited = NULL;
         uint64_t edited_size = 0;
-        if ((getenv("ARK_LOD") || getenv("ARK_SHADOWS")) && strstr(rom_files[i].path, "app_config/")) {
+        if ((getenv("ARK_LOD") || getenv("ARK_SHADOWS") || getenv("ARK_CONFIG")) && strstr(rom_files[i].path, "app_config/")) {
             uint64_t osz = rom_files[i].size;
             uint8_t *orig = NULL;
             bool ok = false;
