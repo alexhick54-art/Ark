@@ -696,6 +696,9 @@ NVN(nvnQueuePresentTexture) {
     int i = (int)A(2);
     if (i >= 0 && i < w->num) backend_present(HOST(NvnTexture, w->textures[i]));
     present_pace(w->interval);
+    extern void timescan_frame(uint64_t);
+    extern uint64_t renderer_present_count(void);
+    timescan_frame(renderer_present_count());
 }
 
 // ================================================================== small state objects
