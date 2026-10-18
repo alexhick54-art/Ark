@@ -377,7 +377,12 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         IpcBuf *b = out_buf(req, 0);
         if (!b) { resp->result = MAKE_RESULT(2, 6001); break; }
         if (size > b->size) size = b->size;
+        // Ark: the OS reads straight into guest memory, which on Windows is committed lazily on first touch; an
+        // untouched (or recently unmapped and remapped) buffer made ReadFile fail part-way, and the game then found
+        // corrupt data (an Oodle "LZ corruption" abort while loading)
+        plat_commit(b->addr, size);
         ssize_t n = romfs_read(st->fd, (uint8_t *)(uintptr_t)b->addr, size, off);
+        if (n >= 0 && (uint64_t)n < size) LOG("[fs] storage read at %llx: %lld of %llu bytes\n", (unsigned long long)off, (long long)n, (unsigned long long)size);
         if (n < 0) LOG("[fs] storage read failed at %llx: %s\n", off, strerror(errno));
         {
             const char *path = romfs_file_at(off);
@@ -444,6 +449,7 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         int64_t off = IN(int64_t, 8), size = IN(int64_t, 16);
         IpcBuf *b = out_buf(req, 0);
         if ((uint64_t)size > b->size) size = (int64_t)b->size;
+        plat_commit(b->addr, size);  // (see the storage read)
         ssize_t n = pread(f->fd, (void *)(uintptr_t)b->addr, (size_t)size, off);
         if (strstr(f->path, "savedata")) {
             LOG("[save] read %s off %lld size %lld -> guest %llx\n", f->path, (long long)off, (long long)size, (unsigned long long)b->addr);
