@@ -2535,6 +2535,16 @@ static void draw_(CmdRec *r, bool indexed) {
         for (int b = 0; b < 4; b++) st.xfb_off[b] += xfb_n * pr->xfb.stride[b];
         st.xfb_verts += xfb_n;
     }
+    if (g_debug_frame && getenv("LARECOMP_SPLIT_VS")) {  // debug: a pass image after each draw with these vertex shaders
+        char hexvs[24];
+        snprintf(hexvs, sizeof hexvs, "%llx", (unsigned long long)st.program->stages[0].code_addr);
+        if (strstr(getenv("LARECOMP_SPLIT_VS"), hexvs)) {
+            LOG("[split] pass image %d: after vs %s count %llu inst %llu\n", debug_pass_no, hexvs,
+                (unsigned long long)r->x[2], (unsigned long long)(indexed ? r->x[6] : r->x[4]));
+            st.rt_dirty = true;
+            vk_end_pass();
+        }
+    }
     stat_draws++;
     cum_draws++;
     if (g_gpuprof_frame && gp_n) {
@@ -2607,6 +2617,18 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
             }
             watch_arm();
         }
+    }
+    for (int i = 0; i < pr->vi->ntex && i < 64; i++) {  // vertex textures (heightmaps, wind)
+        NvnTexture *t = shader_texture_object(0, &pr->vi->tex[i]);
+        const TexBackend *b = t ? (const TexBackend *)t->backend : NULL;
+        if (!t) { LOG("[draw]   vtex%d: none\n", i); continue; }
+        LOG("[draw]   vtex%d: %p %ux%ux%u f%#x target %u lv %u addr %llx", i, (void *)t, t->width, t->height, t->depth, t->format,
+            t->target, b ? b->levels : 0, (unsigned long long)t->addr);
+        if (t->addr && t->format && getenv("LARECOMP_DEBUG_DATA")) {  // the first texels as words
+            LOG(" |");
+            for (int k = 0; k < 8; k++) LOG(" %08x", ((const uint32_t *)(uintptr_t)t->addr)[k]);
+        }
+        LOG("\n");
     }
     for (int i = 0; i < pr->fi->ntex && i < 64; i++) {  // fragment textures: guest size / format, allocation, scale
         NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
