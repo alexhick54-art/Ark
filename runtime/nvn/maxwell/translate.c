@@ -94,6 +94,7 @@ typedef struct {
     bool tex_weak[64];            // slot type only guessed (from a size query): the next sample decides
     bool fail;
     bool branchy;  // program uses the pc state machine
+    bool uses_xo;  // transform feedback: the vertex outputs' raw words kept as uints (xo_[], see attr_store)
     int ipa_mode;  // interpolation mode of the IPA being translated (-1 for plain loads)
     // GLSL (fields kept last: the MSL path's layout, including its out-of-range reg_used writes, is unchanged)
     bool glsl;               // emit Vulkan GLSL: dialect-specific constructs here, the rest via glsl_rewrite()
@@ -302,6 +303,13 @@ static void attr_store(Ctx *c, int src, uint32_t addr) {
         int a = (addr - 0x80) >> 4;
         c->out_attr_mask |= 1u << a;
         sp(&c->body, "    out.v%d[%d] = as_type<float>(%s);\n", a, (addr >> 2) & 3, v);
+        // transform feedback captures the output words as they are: packed integers (a skinned vertex's normal and
+        // tangent, 10:10:10:2 in one word) must not pass through a float variable, where denormal and NaN patterns
+        // need not survive (flushed or canonicalized: faceted, banded lighting on characters)
+        if (c->glsl && c->stage == STAGE_VERTEX && c->key && c->key->xfb && maxwell_xfb) {
+            c->uses_xo = true;
+            sp(&c->body, "    xo_[%d] = %s;\n", a * 4 + ((addr >> 2) & 3), v);
+        }
     } else if (addr == 0x6C) {
         c->info->writes_point_size = true;
         sp(&c->body, "    out.psize = as_type<float>(%s);\n", v);
@@ -1909,7 +1917,8 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
                 int a = L->attr[b][j] - 0x20;
                 for (int k = 0; k < L->ncomp[b][j] && k < 4; k++, off += 4) {
                     char val[64];
-                    if (a >= 0 && a < 32 && (c->out_attr_mask & (1u << a))) snprintf(val, sizeof val, "floatBitsToUint(v%d[%d])", a, k);
+                    if (a >= 0 && a < 32 && (c->out_attr_mask & (1u << a)) && c->uses_xo) snprintf(val, sizeof val, "xo_[%d]", a * 4 + k);
+                    else if (a >= 0 && a < 32 && (c->out_attr_mask & (1u << a))) snprintf(val, sizeof val, "floatBitsToUint(v%d[%d])", a, k);
                     else snprintf(val, sizeof val, "0u");
                     char addr[64];
                     snprintf(addr, sizeof addr, "xfa_ + %uul", off);
@@ -2002,6 +2011,7 @@ static ShaderInfo *glsl_finish(Ctx *c, bool any_branch, bool dbg) {
         for (int i = 0; i < 32; i++)
             if (c->out_attr_mask & (1u << i)) sp(&s, "  v%d = vec4(0, 0, 0, 1);\n", i);
         if (info->writes_point_size) sp(&s, "  gl_PointSize = 0.0f;\n");
+        if (c->uses_xo) sp(&s, "  uint xo_[128]; for (int xi_ = 0; xi_ < 128; xi_++) xo_[xi_] = (xi_ & 3) == 3 ? 0x3f800000u : 0u;\n");
     }
     for (int i = 0; i < 256; i++)
         if (c->reg_used[i]) sp(&s, "  uint r%d = 0u;\n", i);
